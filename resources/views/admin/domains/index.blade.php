@@ -169,14 +169,15 @@ function modeBadgePhp(string $mode): string {
 }
 
 function switchTargets(string $mode): array {
-    return match($mode) {
-        'cf'      => ['cf_only' => '→ CF Only (без SW)', 'dns' => '→ DNS + SW'],
-        'dns'     => ['cf_only' => '→ CF Only (обход SW)'],
-        'cf_only' => ['dns' => '→ Вернуть DNS + SW'],
-        'sw_cf'   => ['cf_only' => '→ CF Only (SW упал)'],
-        'sw_only' => [],
-        default   => [],
-    };
+    $all = [
+        'cf'      => '☁️ CF Proxied — Cloudflare принимает трафик → бэкенд',
+        'dns'     => '🔀 DNS + SW — CF DNS → StormWall → бэкенд',
+        'sw_cf'   => '⚡ SW → CF → бэкенд',
+        'cf_only' => '🔒 CF Only (failover)',
+        'sw_only' => '🛡️ SW Only (failover)',
+    ];
+    unset($all[$mode]);
+    return $all;
 }
 @endphp
 
@@ -261,14 +262,14 @@ function buildRow(d) {
 }
 
 function switchTargetsJs(mode) {
-    var map = {
-        cf:      [{mode:'cf_only', label:'→ CF Only (без SW)'}, {mode:'dns', label:'→ DNS + SW'}],
-        dns:     [{mode:'cf_only', label:'→ CF Only (обход SW)'}],
-        cf_only: [{mode:'dns', label:'→ Вернуть DNS + SW'}],
-        sw_cf:   [{mode:'cf_only', label:'→ CF Only (SW упал)'}],
-        sw_only: [],
-    };
-    return map[mode] || [];
+    var all = [
+        { mode: 'cf',      label: '☁️ CF Proxied — Cloudflare принимает трафик → бэкенд' },
+        { mode: 'dns',     label: '🔀 DNS + SW — CF DNS → StormWall → бэкенд' },
+        { mode: 'sw_cf',   label: '⚡ SW → CF → бэкенд' },
+        { mode: 'cf_only', label: '🔒 CF Only (failover)' },
+        { mode: 'sw_only', label: '🛡️ SW Only (failover)' },
+    ];
+    return all.filter(function(t) { return t.mode !== mode; });
 }
 
 function refresh() {
