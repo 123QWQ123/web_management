@@ -33,9 +33,12 @@ class DomainController extends Controller
                 'id'                      => $d->id,
                 'domain'                  => $d->domain,
                 'mode'                    => $d->mode,
+                'previous_mode'           => $d->previous_mode,
+                'active_traffic_receiver' => $d->active_traffic_receiver,
                 'status'                  => $d->status,
                 'cloudflare_nameservers'  => $d->cloudflare_nameservers ?? [],
                 'stormwall_ip'            => $d->stormwall_ip,
+                'cf_proxy_ip'             => $d->cf_proxy_ip,
                 'server_ip'               => $d->server_ip,
                 'created_at'              => $d->created_at->format('d.m.Y H:i'),
             ])
@@ -44,18 +47,23 @@ class DomainController extends Controller
 
     public function create()
     {
-        $serverIps   = Setting::where('key', 'server_ips')->first()?->value ?? [];
-        $stormwallIps = Setting::where('key', 'stormwall_ips')->first()?->value ?? [];
+        $serverIps      = Setting::where('key', 'server_ips')->first()?->value ?? [];
+        $stormwallIps   = Setting::where('key', 'stormwall_ips')->first()?->value ?? [];
+        $cfProxyIps     = Setting::where('key', 'cloudflare_proxy_ips')->first()?->value ?? [];
 
-        return view('admin.domains.create', compact('serverIps', 'stormwallIps'));
+        return view('admin.domains.create', compact('serverIps', 'stormwallIps', 'cfProxyIps'));
     }
 
     public function store(StoreDomainRequest $request): RedirectResponse
     {
         $data = $request->validated();
 
-        $this->rememberIp('server_ips',    $data['server_ip']    ?? null);
-        $this->rememberIp('stormwall_ips', $data['stormwall_ip'] ?? null);
+        $this->rememberIp('server_ips',           $data['server_ip']    ?? null);
+        $this->rememberIp('stormwall_ips',         $data['stormwall_ip'] ?? null);
+        $this->rememberIp('cloudflare_proxy_ips',  $data['cf_proxy_ip']  ?? null);
+
+        // Set active_traffic_receiver based on mode
+        $data['active_traffic_receiver'] = in_array($data['mode'], ['dns', 'sw_cf', 'sw_only']) ? 'sw' : 'cf';
 
         $domain = Domain::create($data);
 

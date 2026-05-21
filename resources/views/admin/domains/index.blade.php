@@ -3,13 +3,15 @@
 @section('content')
 <style>
 .tooltip-wide .tooltip-inner {
-    max-width: 420px;
+    max-width: 480px;
     text-align: left;
     white-space: nowrap;
 }
+.badge-mode-sw_cf   { background: #6f42c1; color: #fff; }
+.badge-mode-sw_only { background: #343a40; color: #fff; }
 </style>
 <div class="container-fluid px-4">
-    <div class="d-flex justify-content-between align-items-center mb-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
         <h1 class="mb-0">Домены</h1>
         <div class="d-flex align-items-center gap-3">
             {{-- Live indicator with status legend tooltip --}}
@@ -26,7 +28,7 @@
                          <b>Индикатор:</b><br>
                          &#9679; <span style='color:#198754'>зелёный</span> — соединение активно<br>
                          &#9679; <span style='color:#ffc107'>жёлтый</span> — ошибка запроса к API">
-                <span id="live-indicator" style="transition:opacity 0.25s">
+                <span id="live-indicator">
                     <span id="live-dot" class="text-success">&#9679;</span>
                     Прямой эфир &mdash; <span id="live-clock" style="transition:opacity 0.25s; display:inline-block; width:6ch; text-align:right">—</span>
                 </span>
@@ -36,8 +38,19 @@
     </div>
 
     @if(session('status'))
-        <div class="alert alert-success">{{ session('status') }}</div>
+        <div class="alert alert-success alert-dismissible fade show py-2">{{ session('status') }}<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>
     @endif
+    @if(session('error'))
+        <div class="alert alert-danger alert-dismissible fade show py-2">{{ session('error') }}<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>
+    @endif
+
+    {{-- IP filter --}}
+    <div class="d-flex align-items-center gap-2 mb-2">
+        <input id="ip-filter" type="text" class="form-control form-control-sm" style="max-width:220px"
+               placeholder="🔍 Фильтр по IP (backend / SW / CF)..."
+               oninput="filterByIp(this.value)">
+        <span id="ip-filter-count" class="text-muted small"></span>
+    </div>
 
     <div id="domains-empty" class="{{ $domains->isEmpty() ? '' : 'd-none' }}">
         <div class="alert alert-secondary">Доменов пока нет.</div>
@@ -53,21 +66,18 @@
                 <th>SW Proxy IP</th>
                 <th>IP сервера</th>
                 <th>Добавлен</th>
-                <th style="width:100px"></th>
+                <th style="min-width:160px"></th>
             </tr>
         </thead>
         <tbody id="domains-tbody">
             @foreach($domains as $domain)
             @php $ns = $domain->cloudflare_nameservers ?? []; @endphp
-            <tr data-id="{{ $domain->id }}">
+            <tr data-id="{{ $domain->id }}"
+                data-server-ip="{{ $domain->server_ip }}"
+                data-stormwall-ip="{{ $domain->stormwall_ip }}"
+                data-cf-proxy-ip="{{ $domain->cf_proxy_ip }}">
                 <td><strong>{{ $domain->domain }}</strong></td>
-                <td>
-                    @if($domain->mode === 'cf')
-                        <span class="badge bg-warning text-dark">Proxied</span>
-                    @else
-                        <span class="badge bg-info text-dark">DNS Only</span>
-                    @endif
-                </td>
+                <td>{!! modeBadgePhp($domain->mode) !!}</td>
                 <td>
                     @php
                         $c = match($domain->status) {
@@ -98,18 +108,77 @@
                 <td>{{ $domain->server_ip ?? '—' }}</td>
                 <td class="text-muted">{{ $domain->created_at->format('d.m.Y H:i') }}</td>
                 <td>
-                    <form action="{{ route('admin.domains.destroy', $domain) }}" method="POST"
-                          onsubmit="return confirm('Удалить {{ $domain->domain }} из Cloudflare, StormWall и базы данных?')">
-                        @csrf
-                        @method('DELETE')
-                        <button type="submit" class="btn btn-sm btn-danger w-100">Удалить</button>
-                    </form>
+                    <div class="d-flex flex-column gap-1">
+                        {{-- Traffic switcher (only for done domains) --}}
+                        @if($domain->status === 'done')
+                            @php
+                                $switchTargets = switchTargets($domain->mode);
+                            @endphp
+                            @if(count($switchTargets))
+                            <div class="dropdown">
+                                <button class="btn btn-sm btn-outline-primary w-100 dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                                    Переключить
+                                </button>
+                                <ul class="dropdown-menu">
+                                    @foreach($switchTargets as $tMode => $tLabel)
+                                    <li>
+                                        <form action="{{ route('admin.domains.switch-traffic', $domain) }}" method="POST" class="px-3 py-1">
+                                            @csrf
+                                            <input type="hidden" name="mode" value="{{ $tMode }}">
+                                            <button type="submit" class="btn btn-sm btn-link p-0 text-decoration-none">{{ $tLabel }}</button>
+                                        </form>
+                                    </li>
+                                    @endforeach
+                                </ul>
+                            </div>
+                            @endif
+                            @if($domain->previous_mode)
+                            <form action="{{ route('admin.domains.revert-traffic', $domain) }}" method="POST">
+                                @csrf
+                                <button type="submit" class="btn btn-sm btn-outline-warning w-100"
+                                        onclick="return confirm('Вернуть режим «{{ $domain->previous_mode }}»?')">
+                                    ↩ Вернуть ({{ $domain->previous_mode }})
+                                </button>
+                            </form>
+                            @endif
+                        @endif
+                        <form action="{{ route('admin.domains.destroy', $domain) }}" method="POST"
+                              onsubmit="return confirm('Удалить {{ $domain->domain }} из Cloudflare, StormWall и базы данных?')">
+                            @csrf
+                            @method('DELETE')
+                            <button type="submit" class="btn btn-sm btn-danger w-100">Удалить</button>
+                        </form>
+                    </div>
                 </td>
             </tr>
             @endforeach
         </tbody>
     </table>
 </div>
+
+@php
+function modeBadgePhp(string $mode): string {
+    return match($mode) {
+        'cf'      => '<span class="badge bg-warning text-dark">CF Proxied</span>',
+        'dns'     => '<span class="badge bg-info text-dark">DNS + SW</span>',
+        'sw_cf'   => '<span class="badge badge-mode-sw_cf">SW → CF</span>',
+        'cf_only' => '<span class="badge bg-warning text-dark">CF Only</span>',
+        'sw_only' => '<span class="badge badge-mode-sw_only">SW Only</span>',
+        default   => '<span class="badge bg-secondary">' . e($mode) . '</span>',
+    };
+}
+
+function switchTargets(string $mode): array {
+    return match($mode) {
+        'cf'      => ['cf_only' => '→ CF Only (без SW)', 'dns' => '→ DNS + SW'],
+        'dns'     => ['cf_only' => '→ CF Only (обход SW)'],
+        'cf_only' => ['dns' => '→ Вернуть DNS + SW'],
+        'sw_cf'   => ['cf_only' => '→ CF Only (SW упал)'],
+        'sw_only' => [],
+        default   => [],
+    };
+}
+@endphp
 
 <script>
 var API_URL     = '{{ route('admin.domains.api') }}';
@@ -124,9 +193,14 @@ function statusBadge(status) {
 }
 
 function modeBadge(mode) {
-    return mode === 'cf'
-        ? '<span class="badge bg-warning text-dark">Proxied</span>'
-        : '<span class="badge bg-info text-dark">DNS Only</span>';
+    var badges = {
+        cf:      '<span class="badge bg-warning text-dark">CF Proxied</span>',
+        dns:     '<span class="badge bg-info text-dark">DNS + SW</span>',
+        sw_cf:   '<span class="badge badge-mode-sw_cf">SW → CF</span>',
+        cf_only: '<span class="badge bg-warning text-dark">CF Only</span>',
+        sw_only: '<span class="badge badge-mode-sw_only">SW Only</span>',
+    };
+    return badges[mode] || '<span class="badge bg-secondary">' + mode + '</span>';
 }
 
 function nsCells(domainId, nameservers) {
@@ -144,7 +218,38 @@ function nsCells(domainId, nameservers) {
 }
 
 function buildRow(d) {
-    return '<tr data-id="' + d.id + '">' +
+    var actions = '';
+    if (d.status === 'done') {
+        var targets = switchTargetsJs(d.mode);
+        if (targets.length) {
+            var opts = targets.map(function(t) {
+                return '<li><form action="' + DELETE_BASE + '/' + d.id + '/switch-traffic" method="POST" class="px-3 py-1">' +
+                    '<input type="hidden" name="_token" value="' + CSRF + '">' +
+                    '<input type="hidden" name="mode" value="' + t.mode + '">' +
+                    '<button type="submit" class="btn btn-sm btn-link p-0 text-decoration-none">' + t.label + '</button>' +
+                    '</form></li>';
+            }).join('');
+            actions += '<div class="dropdown mb-1"><button class="btn btn-sm btn-outline-primary w-100 dropdown-toggle" type="button" data-bs-toggle="dropdown">Переключить</button>' +
+                '<ul class="dropdown-menu">' + opts + '</ul></div>';
+        }
+        if (d.previous_mode) {
+            actions += '<form action="' + DELETE_BASE + '/' + d.id + '/revert-traffic" method="POST" class="mb-1">' +
+                '<input type="hidden" name="_token" value="' + CSRF + '">' +
+                '<button type="submit" class="btn btn-sm btn-outline-warning w-100" onclick="return confirm(\'Вернуть режим «' + d.previous_mode + '»?\')">↩ Вернуть (' + d.previous_mode + ')</button>' +
+                '</form>';
+        }
+    }
+    actions += '<form action="' + DELETE_BASE + '/' + d.id + '" method="POST"' +
+        ' onsubmit="return confirm(\'Удалить ' + d.domain + '?\')">' +
+        '<input type="hidden" name="_token" value="' + CSRF + '">' +
+        '<input type="hidden" name="_method" value="DELETE">' +
+        '<button type="submit" class="btn btn-sm btn-danger w-100">Удалить</button>' +
+        '</form>';
+
+    return '<tr data-id="' + d.id + '"' +
+        ' data-server-ip="' + (d.server_ip || '') + '"' +
+        ' data-stormwall-ip="' + (d.stormwall_ip || '') + '"' +
+        ' data-cf-proxy-ip="' + (d.cf_proxy_ip || '') + '">' +
         '<td><strong>' + d.domain + '</strong></td>' +
         '<td>' + modeBadge(d.mode) + '</td>' +
         '<td>' + statusBadge(d.status) + '</td>' +
@@ -152,12 +257,18 @@ function buildRow(d) {
         '<td>' + (d.stormwall_ip || '—') + '</td>' +
         '<td>' + (d.server_ip || '—') + '</td>' +
         '<td class="text-muted">' + d.created_at + '</td>' +
-        '<td><form action="' + DELETE_BASE + '/' + d.id + '" method="POST"' +
-        ' onsubmit="return confirm(\'Удалить ' + d.domain + '?\')">' +
-        '<input type="hidden" name="_token" value="' + CSRF + '">' +
-        '<input type="hidden" name="_method" value="DELETE">' +
-        '<button type="submit" class="btn btn-sm btn-danger w-100">Удалить</button>' +
-        '</form></td></tr>';
+        '<td><div class="d-flex flex-column gap-1">' + actions + '</div></td></tr>';
+}
+
+function switchTargetsJs(mode) {
+    var map = {
+        cf:      [{mode:'cf_only', label:'→ CF Only (без SW)'}, {mode:'dns', label:'→ DNS + SW'}],
+        dns:     [{mode:'cf_only', label:'→ CF Only (обход SW)'}],
+        cf_only: [{mode:'dns', label:'→ Вернуть DNS + SW'}],
+        sw_cf:   [{mode:'cf_only', label:'→ CF Only (SW упал)'}],
+        sw_only: [],
+    };
+    return map[mode] || [];
 }
 
 function refresh() {
@@ -191,9 +302,13 @@ function refresh() {
             domains.forEach(function(d, idx) {
                 var existing = tbody.querySelector('tr[data-id="' + d.id + '"]');
                 if (existing) {
+                    existing.cells[1].innerHTML = modeBadge(d.mode);
                     existing.cells[2].innerHTML = statusBadge(d.status);
                     existing.cells[3].innerHTML = nsCells(d.id, d.cloudflare_nameservers);
                     existing.cells[4].textContent = d.stormwall_ip || '—';
+                    existing.dataset.serverIp    = d.server_ip    || '';
+                    existing.dataset.stormwallIp = d.stormwall_ip || '';
+                    existing.dataset.cfProxyIp   = d.cf_proxy_ip  || '';
                 } else {
                     var tmp = document.createElement('tbody');
                     tmp.innerHTML = buildRow(d);
@@ -201,7 +316,11 @@ function refresh() {
                 }
             });
 
-            // Blink only the clock on refresh
+            // Reapply filter after refresh
+            var filterVal = document.getElementById('ip-filter').value;
+            if (filterVal) filterByIp(filterVal);
+
+            // Blink clock
             var clock = document.getElementById('live-clock');
             clock.style.opacity = '0.25';
             setTimeout(function() { clock.style.opacity = ''; }, 250);
@@ -211,6 +330,31 @@ function refresh() {
         .catch(function() {
             document.getElementById('live-dot').className = 'text-warning';
         });
+}
+
+function filterByIp(query) {
+    var rows  = document.querySelectorAll('#domains-tbody tr[data-id]');
+    var q     = query.trim().toLowerCase();
+    var shown = 0;
+
+    rows.forEach(function(row) {
+        var ips = [
+            row.dataset.serverIp,
+            row.dataset.stormwallIp,
+            row.dataset.cfProxyIp,
+        ].join(' ').toLowerCase();
+
+        var match = !q || ips.includes(q);
+        row.style.display = match ? '' : 'none';
+        if (match) shown++;
+    });
+
+    var counter = document.getElementById('ip-filter-count');
+    if (q) {
+        counter.textContent = 'Показано: ' + shown + ' из ' + rows.length;
+    } else {
+        counter.textContent = '';
+    }
 }
 
 setInterval(refresh, 4000);
@@ -241,12 +385,10 @@ function copyNs(id, btn) {
     navigator.clipboard.writeText(el.textContent.trim()).then(function() {
         var orig = btn.innerHTML;
         btn.innerHTML = '&#10003;';
-        btn.classList.remove('btn-outline-secondary');
-        btn.classList.add('btn-success');
+        btn.classList.replace('btn-outline-secondary', 'btn-success');
         setTimeout(function() {
             btn.innerHTML = orig;
-            btn.classList.remove('btn-success');
-            btn.classList.add('btn-outline-secondary');
+            btn.classList.replace('btn-success', 'btn-outline-secondary');
         }, 1500);
     });
 }

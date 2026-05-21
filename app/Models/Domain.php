@@ -12,6 +12,9 @@ class Domain extends Model
         'preland_id',
         'traffic_flow_id',
         'mode',
+        'previous_mode',
+        'previous_config',
+        'active_traffic_receiver',
         'status',
         'cloudflare_zone_id',
         'cloudflare_nameservers',
@@ -19,6 +22,7 @@ class Domain extends Model
         'stormwall_domain_id',
         'server_ip',
         'stormwall_ip',
+        'cf_proxy_ip',
         'ssl_requested_at',
         'ssl_ready_at',
         'next_attempt_at',
@@ -27,6 +31,7 @@ class Domain extends Model
 
     protected $casts = [
         'cloudflare_nameservers' => 'array',
+        'previous_config'        => 'array',
         'ssl_requested_at'       => 'datetime',
         'ssl_ready_at'           => 'datetime',
         'next_attempt_at'        => 'datetime',

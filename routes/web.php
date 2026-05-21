@@ -27,4 +27,7 @@ Route::prefix('admin')->name('admin.')->group(function () {
     Route::get('domains/create', [App\Http\Controllers\Admin\DomainController::class, 'create'])->name('domains.create');
     Route::post('domains', [App\Http\Controllers\Admin\DomainController::class, 'store'])->name('domains.store');
     Route::delete('domains/{domain}', [App\Http\Controllers\Admin\DomainController::class, 'destroy'])->name('domains.destroy');
+
+    Route::post('domains/{domain}/switch-traffic', [App\Http\Controllers\Admin\SwitchTrafficController::class, 'switchTraffic'])->name('domains.switch-traffic');
+    Route::post('domains/{domain}/revert-traffic', [App\Http\Controllers\Admin\SwitchTrafficController::class, 'revertTraffic'])->name('domains.revert-traffic');
 });
