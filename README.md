@@ -1,59 +1,233 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Web Management — Domain Provisioning & Traffic Routing Platform
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+A Laravel-based infrastructure management platform for domain alias provisioning and traffic routing orchestration across **Cloudflare** and **StormWall**.
 
-## About Laravel
+---
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+## What This Is
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+This is **not** a CRUD app. It is an operational workflow system that manages how a domain is connected to Cloudflare and optionally StormWall, in the correct order, with observable state transitions and safe retries.
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+Operators can:
+- Add domain aliases and assign them to projects, prelands, and traffic flows
+- Select a traffic routing mode (4 supported)
+- Switch routing modes on live domains with a one-click revert option
+- Configure reusable infrastructure IPs from the Settings panel
+- Monitor live domain status with 4-second auto-refresh
 
-## Learning Laravel
+---
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework. You can also check out [Laravel Learn](https://laravel.com/learn), where you will be guided through building a modern Laravel application.
+## Routing Modes
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+| Mode | Traffic Flow | Registrar |
+|------|-------------|-----------|
+| `cf` | Registrar → **CF** → Backend | NS → Cloudflare |
+| `sw` | Registrar → **SW** → Backend | A-record → StormWall IP |
+| `cf_sw` | Registrar → **CF** → SW → Backend | NS → Cloudflare |
+| `sw_cf` | Registrar → **SW** → CF → Backend | A-record → StormWall IP |
 
-## Laravel Sponsors
+### CF DNS record target per mode
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
+| Mode | CF DNS points to | proxied |
+|------|-----------------|---------|
+| `cf` | `server_ip` | ✅ true |
+| `sw` | — (no CF record) | — |
+| `cf_sw` | `stormwall_ip` | ✅ true |
+| `sw_cf` | `server_ip` | ✅ true |
 
-### Premium Partners
+---
 
-- **[Vehikl](https://vehikl.com)**
-- **[Tighten Co.](https://tighten.co)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Redberry](https://redberry.international/laravel-development)**
-- **[Active Logic](https://activelogic.com)**
+## Provisioning Workflow
 
-## Contributing
+Each domain progresses through a strict sequence of steps tracked by the `status` field.
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+```
+cf:    INIT → CF_ZONE → CF_DNS → DONE
 
-## Code of Conduct
+sw:    INIT → SW_DOMAIN → SW_BACKENDS → [SSL_REQUEST → WAIT_SSL] → DONE
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+cf_sw: INIT → CF_ZONE → SW_DOMAIN → CF_DNS → SW_BACKENDS → [SSL] → DONE
 
-## Security Vulnerabilities
+sw_cf: INIT → CF_ZONE → CF_DNS → SW_DOMAIN → SW_CF_BACKENDS → DONE
+```
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+Every step is executed by a queued `ProcessDomainJob` → `DomainOrchestrator` fan-forward pattern. All provider calls are logged with full request/response context via `DomainWorkflowLogger`.
 
-## License
+---
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+## Traffic Switcher
+
+For domains with status `done`, operators can switch routing modes at runtime without re-provisioning:
+
+- **CF → SW**: updates CF DNS, replaces SW backends with `server_ip`
+- **SW → CF**: provisions CF zone if missing, sets CF DNS to `server_ip`
+- **CF → CF_SW**: points CF DNS to StormWall IP, replaces SW backends with `server_ip`
+- **SW → SW_CF**: sets CF DNS to `server_ip`, resolves CF anycast IP, sets SW backend to CF proxy IP
+- Any switch saves the previous mode + config snapshot for **one-click revert**
+
+### Pending CF Activation (sw → sw_cf)
+
+If the CF zone is in `pending` status (registrar NS not yet changed), the switcher:
+1. Sets mode to `cf` as intermediate state
+2. Stores `sw_cf` in `pending_mode`
+3. Dispatches `PollCfActivationJob` (polls every 30s, max 24h)
+4. Shows the operator the NS servers to add at the registrar
+5. Completes the switch automatically once the zone becomes `active`
+
+---
+
+## Architecture
+
+```
+app/
+├── Http/Controllers/Admin/
+│   ├── DomainController.php        # CRUD + live API feed
+│   ├── SwitchTrafficController.php # Mode switcher + revert
+│   └── SettingController.php       # Reusable infrastructure IPs
+│
+├── Services/
+│   ├── DomainOrchestrator.php      # Workflow coordinator (step routing)
+│   ├── DomainWorkflowLogger.php    # Step-level request/response logging
+│   ├── Cloudflare/
+│   │   ├── CloudflareService.php   # Zone, DNS, settings, anycast IP resolve
+│   │   ├── Contracts/              # CloudflareServiceInterface
+│   │   ├── DTO/                    # ZoneData, DnsRecordData
+│   │   └── Http/CloudflareClient.php
+│   └── StormWall/
+│       ├── StormWallService.php    # Domain, backends, SSL, proxy ports
+│       ├── Contracts/              # StormWallServiceInterface
+│       ├── DTO/                    # BackendData, CreateDomainData, ...
+│       ├── Exceptions/             # StormWallException
+│       └── Http/StormWallClient.php
+│
+├── Jobs/
+│   ├── ProcessDomainJob.php        # Fan-forward job per workflow step
+│   └── PollCfActivationJob.php     # Polls CF zone until active (sw_cf deferred)
+│
+├── Models/
+│   ├── Domain.php                  # Domain alias with full routing state
+│   └── Setting.php                 # Key-value infrastructure settings
+│
+└── Enums/
+    └── DomainStatus.php            # All workflow statuses
+```
+
+---
+
+## Setup
+
+### Requirements
+
+- PHP 8.2+
+- Laravel 11
+- MySQL / PostgreSQL
+- Redis or database queue driver
+- `dig` CLI tool available on the server (for CF anycast IP resolution)
+
+### Installation
+
+```bash
+git clone <repo>
+cd web-management
+composer install
+cp .env.example .env
+php artisan key:generate
+php artisan migrate
+npm install && npm run build
+```
+
+### Environment Variables
+
+```env
+# Cloudflare
+CLOUDFLARE_API_TOKEN=
+CLOUDFLARE_ACCOUNT_ID=
+
+# StormWall
+STORMWALL_API_KEY=
+STORMWALL_SERVICE_ID=
+STORMWALL_BASE_URL=https://api.stormwall.pro
+
+# StormWall backend defaults
+STORMWALL_DOMAIN_PORT=80
+STORMWALL_BACKEND_PORT=80
+STORMWALL_DOMAIN_USES_SSL=false
+STORMWALL_BACKEND_TYPE=balance
+STORMWALL_BACKEND_WEIGHT=1
+STORMWALL_USE_PROXY_SNI=false
+
+# StormWall SSL (Let's Encrypt)
+STORMWALL_SSL_LE_ENABLED=false
+STORMWALL_SSL_LE_WWW_INCLUDED=true
+STORMWALL_SSL_POLL_DELAY_SECONDS=300
+STORMWALL_SSL_MAX_WAIT_MINUTES=30
+
+# Retry config
+STORMWALL_RETRY_TIMES=3
+STORMWALL_RETRY_SLEEP=500
+```
+
+### Queue Worker
+
+The workflow is fully async. You must run the queue worker:
+
+```bash
+php artisan queue:work
+```
+
+For production, use Supervisor or a similar process manager to keep it running.
+
+---
+
+## Admin Panel Routes
+
+| Method | URL | Description |
+|--------|-----|-------------|
+| GET | `/admin/domains` | Domain list with live auto-refresh |
+| GET | `/admin/domains/create` | Add new domain form |
+| POST | `/admin/domains` | Store new domain, dispatch provisioning job |
+| DELETE | `/admin/domains/{domain}` | Delete domain from CF, SW, and DB |
+| POST | `/admin/domains/{domain}/switch-traffic` | Switch routing mode |
+| POST | `/admin/domains/{domain}/revert-traffic` | Revert to previous mode |
+| GET | `/admin/settings` | Infrastructure IP settings |
+| POST | `/admin/settings` | Save IP settings |
+| GET | `/admin/domains/api` | Live JSON feed (polled by frontend every 4s) |
+
+---
+
+## Domain Status Lifecycle
+
+```
+init
+ ↓
+cloudflare_zone       (CF zone created)
+ ↓
+stormwall_domain      (SW domain created, SW proxy IP obtained)
+ ↓
+cloudflare_dns        (DNS A record created/updated in CF)
+ ↓
+stormwall_backends    (SW backends set to server_ip)
+ ↓
+sw_cf_backends        (SW backends set to CF proxy IP — sw_cf mode)
+ ↓
+sw_backends           (SW backends set to server_ip — sw mode)
+ ↓
+stormwall_ssl_requested → waiting_stormwall_ssl
+ ↓
+done ✅  /  failed ❌
+```
+
+Not all steps apply to every mode — the orchestrator routes between them based on `domain.mode`.
+
+---
+
+## Key Design Principles
+
+- **Controllers are thin** — no external API calls, no business logic
+- **Service interfaces** — CF and SW are behind contracts, swappable and testable
+- **DTOs** — all provider payloads are typed value objects
+- **Idempotent workflow** — `findZoneByName` / `findDnsRecord` prevent duplicate creation
+- **Strict ordering** — no steps are collapsed or skipped
+- **Observable state** — every step updates `status` and logs request + response
+- **Safe retries** — provider calls use configurable retry/backoff via `StormWallClient`
+- **One-click revert** — every mode switch snapshots the previous config for rollback

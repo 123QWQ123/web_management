@@ -33,16 +33,17 @@ final readonly class BackendData
     {
         return [
             'backend' => [
-                'ip' => $this->ip,
-                'port' => $this->backendPort,
-                'type' => $this->type,
-                'status' => $this->status,
-                'useSsl' => $this->useSsl,
+                'ip'          => $this->ip,
+                'port'        => $this->backendPort,
+                'type'        => $this->type,
+                'status'      => $this->status,
+                'useSsl'      => $this->useSsl,
                 'useProxySni' => $this->useProxySni,
-                'weight' => $this->weight,
+                // Note: 'isWs' is intentionally excluded — StormWall API rejects the field
+                'weight'      => $this->weight,
             ],
             'domain' => [
-                'port' => $this->domainPort,
+                'port'   => $this->domainPort,
                 'useSsl' => $this->useSsl,
             ],
         ];

@@ -12,6 +12,21 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
+/**
+ * Orchestrates the step-by-step domain provisioning workflow.
+ *
+ * Each call to handle() executes exactly one workflow step based on the domain's current status,
+ * then dispatches a new ProcessDomainJob for the next step (fan-forward pattern).
+ *
+ * Workflow steps per routing mode:
+ *   cf:    INIT → CF_ZONE → CF_DNS → DONE
+ *   sw:    INIT → SW_DOMAIN → SW_BACKENDS → [SSL_REQUEST → WAIT_SSL] → DONE
+ *   cf_sw: INIT → CF_ZONE → SW_DOMAIN → CF_DNS → SW_BACKENDS → [SSL] → DONE
+ *   sw_cf: INIT → CF_ZONE → CF_DNS → SW_DOMAIN → SW_CF_BACKENDS → DONE
+ *
+ * All external API calls are delegated to CloudflareService and StormWallService.
+ * Every step is logged via DomainWorkflowLogger with full request/response context.
+ */
 class DomainOrchestrator
 {
     public function __construct(
@@ -393,6 +408,10 @@ class DomainOrchestrator
         ]);
     }
 
+    /**
+     * Dispatch a job for the next workflow step, optionally with a delay.
+     * Re-reads the domain status to avoid dispatching on a terminal state.
+     */
     private function dispatchNextStep(Domain $domain, ?Carbon $delayUntil = null): void
     {
         $domain->refresh();
@@ -426,6 +445,10 @@ class DomainOrchestrator
         return true;
     }
 
+    /**
+     * Asserts a required string field is not empty.
+     * Throws InvalidArgumentException with a clear message if missing.
+     */
     private function requireValue(?string $value, string $field): string
     {
         return $value ?: throw new \InvalidArgumentException("Domain [{$field}] is required for this workflow step.");

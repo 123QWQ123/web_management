@@ -101,14 +101,15 @@
                         $ns  = $domain->cloudflare_nameservers ?? [];
                         $swIp = $domain->stormwall_ip;
 
-                        // Does this mode require CF NS at registrar?
-                        $cfModes = ['cf', 'sw_cf', 'cf_sw'];
+                        // Which modes need CF NS at registrar? Only modes where CF is the primary receiver.
+                        // sw_cf uses SW as primary receiver → registrar needs A-record → SW IP (not CF NS).
+                        $cfModes = ['cf', 'cf_sw'];
                         $needsCfNs   = in_array($domain->mode, $cfModes);
-                        $needsSwA    = $domain->mode === 'sw';
+                        $needsSwA    = in_array($domain->mode, ['sw', 'sw_cf']);
 
                         // What did the registrar need BEFORE a switch?
                         $prevNeedsCfNs = $domain->previous_mode && in_array($domain->previous_mode, $cfModes);
-                        $prevNeedsSwA  = $domain->previous_mode === 'sw';
+                        $prevNeedsSwA  = $domain->previous_mode && in_array($domain->previous_mode, ['sw', 'sw_cf']);
 
                         // Do registrar settings need to change after the switch?
                         $registrarChanged = $domain->previous_mode && (
@@ -299,12 +300,15 @@ function modeBadge(mode, pendingMode) {
     return html;
 }
 
-var CF_MODES = { cf: 1, sw_cf: 1, cf_sw: 1 };
+// Modes where CF is the primary traffic receiver → registrar needs CF NS.
+// sw_cf uses SW as primary receiver, so it needs A-record → SW IP (not CF NS).
+var CF_NS_MODES = { cf: 1, cf_sw: 1 };
+var SW_A_MODES  = { sw: 1, sw_cf: 1 };
 
 function registrarCell(d) {
     var html      = '';
-    var needsCfNs = !!CF_MODES[d.mode];
-    var needsSwA  = d.mode === 'sw';
+    var needsCfNs = !!CF_NS_MODES[d.mode];
+    var needsSwA  = !!SW_A_MODES[d.mode];
     var ns        = d.cloudflare_nameservers || [];
     var swIp      = d.stormwall_ip || '';
 
@@ -339,8 +343,8 @@ function registrarCell(d) {
 
     // After-switch warning
     if (d.previous_mode) {
-        var prevCfNs = !!CF_MODES[d.previous_mode];
-        var prevSwA  = d.previous_mode === 'sw';
+        var prevCfNs = !!CF_NS_MODES[d.previous_mode];
+        var prevSwA  = !!SW_A_MODES[d.previous_mode];
         if (needsCfNs && prevSwA) {
             html += '<div class="mt-1 p-1 border border-warning rounded small">' +
                 '<span class="text-warning fw-bold">⚠️ Нужно изменить у регистратора:</span><br>' +
@@ -551,6 +555,11 @@ function copyNs(id, btn) {
 }
 
 // ─── SW→CF modal ───────────────────────────────────────────────────────────
+// Use getOrCreateInstance to avoid duplicate Bootstrap Modal instances when
+// the modal is reopened after being closed. Also defer show() by one tick so
+// the Bootstrap dropdown finishes its hide animation before the modal opens —
+// opening a modal synchronously from a dropdown click can cause a backdrop
+// conflict in Bootstrap 5.
 function openSwCfModal(action, currentCfProxyIp) {
     document.getElementById('swCfForm').action = action;
     var input = document.getElementById('swCfProxyIpInput');
@@ -565,9 +574,11 @@ function openSwCfModal(action, currentCfProxyIp) {
         hint.className = 'form-text';
         input.required = false;
     }
-    var modal = new bootstrap.Modal(document.getElementById('swCfModal'));
-    modal.show();
-    setTimeout(function() { input.focus(); }, 300);
+    // Defer modal open to allow Bootstrap dropdown to complete its close animation first.
+    setTimeout(function() {
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('swCfModal')).show();
+        setTimeout(function() { input.focus(); }, 300);
+    }, 50);
 }
 </script>
 

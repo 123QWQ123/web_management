@@ -13,6 +13,11 @@ class CloudflareService implements CloudflareServiceInterface
         private CloudflareClient $client
     ) {}
 
+    /**
+     * Create a new Cloudflare zone for the given domain name.
+     * The zone type is 'full' (CF manages DNS authoritatively).
+     * After creation, call applyZoneSettings() to apply required security settings.
+     */
     public function createZone(string $domain): ZoneData
     {
         $res = $this->client->request('post', '/zones', [
@@ -43,6 +48,11 @@ class CloudflareService implements CloudflareServiceInterface
         return $res['result']['status'] ?? 'pending';
     }
 
+    /**
+     * Create a proxied A record in the given zone.
+     * proxied=true means CF terminates the connection and forwards to $ip.
+     * proxied=false means CF only resolves DNS (DNS-only, no proxying).
+     */
     public function createDnsRecord(
         string $zoneId,
         string $name,
@@ -64,6 +74,9 @@ class CloudflareService implements CloudflareServiceInterface
         return DnsRecordData::fromArray($res['result']);
     }
 
+    /**
+     * Update an existing A record's IP and proxied flag (PATCH — partial update).
+     */
     public function updateDnsRecord(
         string $zoneId,
         string $recordId,
@@ -82,17 +95,26 @@ class CloudflareService implements CloudflareServiceInterface
         return DnsRecordData::fromArray($res['result']);
     }
 
+    /** Permanently remove a CF zone and all its DNS records. */
     public function deleteZone(string $zoneId): void
     {
         $this->client->request('delete', "/zones/{$zoneId}");
     }
 
+    /**
+     * Look up an existing CF zone by domain name.
+     * Returns the zone ID string if found, null if the domain has no zone in CF.
+     */
     public function findZoneByName(string $domain): ?string
     {
         $res = $this->client->request('get', '/zones', ['name' => $domain]);
         return $res['result'][0]['id'] ?? null;
     }
 
+    /**
+     * Find an existing A record for $name in the given zone.
+     * Returns null if no matching record exists.
+     */
     public function findDnsRecord(
         string $zoneId,
         string $name
