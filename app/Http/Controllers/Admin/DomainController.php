@@ -22,8 +22,9 @@ class DomainController extends Controller
 
     public function index()
     {
-        $domains = Domain::latest()->get();
-        return view('admin.domains.index', compact('domains'));
+        $domains    = Domain::latest()->get();
+        $cfProxyIps = Setting::where('key', 'cloudflare_proxy_ips')->first()?->value ?? [];
+        return view('admin.domains.index', compact('domains', 'cfProxyIps'));
     }
 
     public function apiIndex()

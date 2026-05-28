@@ -190,11 +190,21 @@
                                 <ul class="dropdown-menu">
                                     @foreach($switchTargets as $tMode => $tLabel)
                                     <li>
+                                        @if($tMode === 'sw_cf')
+                                        {{-- sw_cf needs cf_proxy_ip — open modal instead of direct submit --}}
+                                        <button type="button"
+                                                class="btn btn-sm btn-link p-0 text-decoration-none px-3 py-1 w-100 text-start"
+                                                onclick="openSwCfModal(
+                                                    '{{ route('admin.domains.switch-traffic', $domain) }}',
+                                                    '{{ addslashes($domain->cf_proxy_ip ?? '') }}'
+                                                )">{{ $tLabel }}</button>
+                                        @else
                                         <form action="{{ route('admin.domains.switch-traffic', $domain) }}" method="POST" class="px-3 py-1">
                                             @csrf
                                             <input type="hidden" name="mode" value="{{ $tMode }}">
                                             <button type="submit" class="btn btn-sm btn-link p-0 text-decoration-none">{{ $tLabel }}</button>
                                         </form>
+                                        @endif
                                     </li>
                                     @endforeach
                                 </ul>
@@ -340,6 +350,11 @@ function buildRow(d) {
         var targets = switchTargetsJs(d.mode);
         if (targets.length) {
             var opts = targets.map(function(t) {
+                if (t.mode === 'sw_cf') {
+                    return '<li><button type="button" class="btn btn-sm btn-link p-0 text-decoration-none px-3 py-1 w-100 text-start"' +
+                        ' onclick="openSwCfModal(\'' + DELETE_BASE + '/' + d.id + '/switch-traffic\', \'' + (d.cf_proxy_ip || '') + '\')">' +
+                        t.label + '</button></li>';
+                }
                 return '<li><form action="' + DELETE_BASE + '/' + d.id + '/switch-traffic" method="POST" class="px-3 py-1">' +
                     '<input type="hidden" name="_token" value="' + CSRF + '">' +
                     '<input type="hidden" name="mode" value="' + t.mode + '">' +
@@ -509,5 +524,59 @@ function copyNs(id, btn) {
         }, 1500);
     });
 }
+
+// ─── SW→CF modal ───────────────────────────────────────────────────────────
+function openSwCfModal(action, currentCfProxyIp) {
+    document.getElementById('swCfForm').action = action;
+    var input = document.getElementById('swCfProxyIpInput');
+    input.value = currentCfProxyIp || '';
+    var modal = new bootstrap.Modal(document.getElementById('swCfModal'));
+    modal.show();
+    setTimeout(function() { input.focus(); }, 300);
+}
 </script>
+
+{{-- Modal: SW→CF mode requires CF proxy IP --}}
+<div class="modal fade" id="swCfModal" tabindex="-1" aria-labelledby="swCfModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="swCfModalLabel">⚡ Переключить в режим SW → CF</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form id="swCfForm" method="POST">
+                @csrf
+                <input type="hidden" name="mode" value="sw_cf">
+                <div class="modal-body">
+                    <p class="text-muted small mb-3">
+                        В этом режиме StormWall принимает трафик и передаёт его на Cloudflare proxy IP.
+                        CF в свою очередь проксирует запросы на бэкенд.
+                    </p>
+                    <div class="mb-3">
+                        <label for="swCfProxyIpInput" class="form-label fw-bold">
+                            CF Proxy IP <span class="text-danger">*</span>
+                        </label>
+                        <input type="text"
+                               class="form-control"
+                               id="swCfProxyIpInput"
+                               name="cf_proxy_ip"
+                               placeholder="104.21.x.x"
+                               list="cfProxyIpsList"
+                               required>
+                        <datalist id="cfProxyIpsList">
+                            @foreach($cfProxyIps as $ip)
+                                <option value="{{ $ip }}">
+                            @endforeach
+                        </datalist>
+                        <div class="form-text">IP-адрес Cloudflare anycast proxy, который StormWall будет использовать как бэкенд.</div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
+                    <button type="submit" class="btn btn-primary">Переключить</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
 @endsection

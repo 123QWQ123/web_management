@@ -40,7 +40,8 @@ class SwitchTrafficController extends Controller
     public function switchTraffic(Domain $domain, Request $request): RedirectResponse
     {
         $data = $request->validate([
-            'mode' => ['required', 'in:cf,dns,cf_only,sw_cf,sw_only'],
+            'mode'        => ['required', 'in:cf,dns,cf_only,sw_cf,sw_only'],
+            'cf_proxy_ip' => ['nullable', 'ip'],
         ]);
 
         $targetMode = $data['mode'];
@@ -51,6 +52,12 @@ class SwitchTrafficController extends Controller
 
         if ($domain->mode === $targetMode) {
             return redirect()->back()->with('error', "Домен уже работает в режиме [{$targetMode}].");
+        }
+
+        // If cf_proxy_ip is supplied with the request, save it before precondition check
+        if ($targetMode === 'sw_cf' && ! empty($data['cf_proxy_ip'])) {
+            $domain->cf_proxy_ip = $data['cf_proxy_ip'];
+            $domain->save();
         }
 
         try {
