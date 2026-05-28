@@ -48,4 +48,13 @@ interface CloudflareServiceInterface
 
     ): ?DnsRecordData;
 
+    /**
+     * Resolve the Cloudflare anycast proxy IP assigned to a proxied domain.
+     * Queries CF's own nameservers directly — no registrar NS change required.
+     * Returns null if the record is not yet proxied or nameservers are unreachable.
+     *
+     * @param  string[]  $nameservers  From ZoneData::$nameservers (e.g. ['vera.ns.cloudflare.com'])
+     */
+    public function resolveProxiedIp(string $domain, array $nameservers): ?string;
+
 }

@@ -172,20 +172,35 @@ class DomainOrchestrator
             ? $this->cf->updateDnsRecord($zoneId, $existing->id, $targetIp, $proxied)
             : $this->cf->createDnsRecord($zoneId, $domain->domain, $targetIp, $proxied);
 
-        $domain->update([
+        $updates = [
             'cloudflare_dns_id' => $record->id,
             'status'            => DomainStatus::CLOUDFLARE_DNS->value,
-        ]);
+        ];
+
+        // For sw_cf mode we need the CF anycast proxy IP (what SW will use as backend).
+        // Resolve it now by querying CF's own nameservers — works before registrar NS change.
+        if ($domain->mode === 'sw_cf' && $proxied && ! $domain->cf_proxy_ip) {
+            $nameservers = $domain->cloudflare_nameservers ?? [];
+            if (! empty($nameservers)) {
+                $proxyIp = $this->cf->resolveProxiedIp($domain->domain, $nameservers);
+                if ($proxyIp) {
+                    $updates['cf_proxy_ip'] = $proxyIp;
+                }
+            }
+        }
+
+        $domain->update($updates);
 
         $this->logger->success($domain, DomainStatus::STORMWALL_DOMAIN->value . '|' . DomainStatus::CLOUDFLARE_ZONE->value, [
-            'zone_id'   => $zoneId,
-            'name'      => $domain->domain,
-            'target_ip' => $targetIp,
-            'proxied'   => $proxied,
+            'zone_id'    => $zoneId,
+            'name'       => $domain->domain,
+            'target_ip'  => $targetIp,
+            'proxied'    => $proxied,
         ], [
             'cloudflare_dns_id' => $record->id,
             'content'           => $record->content,
             'proxied'           => $record->proxied,
+            'cf_proxy_ip'       => $updates['cf_proxy_ip'] ?? null,
         ]);
 
         $this->dispatchNextStep($domain);

@@ -98,4 +98,30 @@ class CloudflareService implements CloudflareServiceInterface
             ? DnsRecordData::fromArray($res['result'][0])
             : null;
     }
+
+    /**
+     * Resolve the CF anycast proxy IP by querying CF's own nameservers directly.
+     * This works immediately after a zone + proxied DNS record is created —
+     * no registrar NS change is needed.
+     */
+    public function resolveProxiedIp(string $domain, array $nameservers): ?string
+    {
+        foreach ($nameservers as $ns) {
+            $ns     = escapeshellarg(trim($ns));
+            $domain = escapeshellarg(trim($domain));
+            // Query CF's own NS directly; +short returns just the IP(s)
+            $output = shell_exec("dig +short +time=3 +tries=1 @{$ns} {$domain} A 2>/dev/null");
+
+            if ($output) {
+                $ips = array_filter(array_map('trim', explode("\n", $output)));
+                // dig may return a CNAME chain before the final A record — take the last line
+                $ip = end($ips);
+                if ($ip && filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+                    return $ip;
+                }
+            }
+        }
+
+        return null;
+    }
 }

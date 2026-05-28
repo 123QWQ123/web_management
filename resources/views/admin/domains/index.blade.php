@@ -529,7 +529,17 @@ function copyNs(id, btn) {
 function openSwCfModal(action, currentCfProxyIp) {
     document.getElementById('swCfForm').action = action;
     var input = document.getElementById('swCfProxyIpInput');
+    var hint  = document.getElementById('swCfProxyIpHint');
     input.value = currentCfProxyIp || '';
+    if (currentCfProxyIp) {
+        hint.innerHTML = '✅ IP определён автоматически при настройке. Можно изменить.';
+        hint.className = 'form-text text-success';
+        input.required = false;
+    } else {
+        hint.innerHTML = 'Будет определён автоматически через DNS запрос к CF nameservers. Или введите вручную.';
+        hint.className = 'form-text';
+        input.required = false;
+    }
     var modal = new bootstrap.Modal(document.getElementById('swCfModal'));
     modal.show();
     setTimeout(function() { input.focus(); }, 300);
@@ -554,21 +564,22 @@ function openSwCfModal(action, currentCfProxyIp) {
                     </p>
                     <div class="mb-3">
                         <label for="swCfProxyIpInput" class="form-label fw-bold">
-                            CF Proxy IP <span class="text-danger">*</span>
+                            CF Proxy IP
                         </label>
                         <input type="text"
                                class="form-control"
                                id="swCfProxyIpInput"
                                name="cf_proxy_ip"
-                               placeholder="104.21.x.x"
-                               list="cfProxyIpsList"
-                               required>
+                               placeholder="оставьте пустым — определится автоматически"
+                               list="cfProxyIpsList">
                         <datalist id="cfProxyIpsList">
                             @foreach($cfProxyIps as $ip)
                                 <option value="{{ $ip }}">
                             @endforeach
                         </datalist>
-                        <div class="form-text">IP-адрес Cloudflare anycast proxy, который StormWall будет использовать как бэкенд.</div>
+                        <div id="swCfProxyIpHint" class="form-text">
+                            Будет определён автоматически через DNS запрос к CF nameservers. Или введите вручную.
+                        </div>
                     </div>
                 </div>
                 <div class="modal-footer">

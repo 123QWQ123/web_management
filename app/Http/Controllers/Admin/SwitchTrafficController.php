@@ -54,8 +54,25 @@ class SwitchTrafficController extends Controller
             return redirect()->back()->with('error', "Домен уже работает в режиме [{$targetMode}].");
         }
 
-        // If cf_proxy_ip is supplied with the request, save it before precondition check
-        if ($targetMode === 'sw_cf' && ! empty($data['cf_proxy_ip'])) {
+        // For sw_cf mode: cf_proxy_ip is required.
+        // 1) Use value from form if provided, 2) otherwise auto-resolve via CF nameservers.
+        if ($targetMode === 'sw_cf' && ! $domain->cf_proxy_ip) {
+            if (! empty($data['cf_proxy_ip'])) {
+                $domain->cf_proxy_ip = $data['cf_proxy_ip'];
+                $domain->save();
+            } elseif (! empty($domain->cloudflare_nameservers) && $domain->cloudflare_zone_id) {
+                $resolved = $this->cf->resolveProxiedIp($domain->domain, $domain->cloudflare_nameservers);
+                if ($resolved) {
+                    $domain->cf_proxy_ip = $resolved;
+                    $domain->save();
+                    Log::channel('domain')->info('cf_proxy_ip auto-resolved', [
+                        'domain'      => $domain->domain,
+                        'cf_proxy_ip' => $resolved,
+                    ]);
+                }
+            }
+        } elseif ($targetMode === 'sw_cf' && ! empty($data['cf_proxy_ip'])) {
+            // Update if a new value was explicitly provided
             $domain->cf_proxy_ip = $data['cf_proxy_ip'];
             $domain->save();
         }
