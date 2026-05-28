@@ -18,10 +18,10 @@ class StoreDomainRequest extends FormRequest
             'project_id'      => ['nullable', 'integer'],
             'preland_id'      => ['nullable', 'integer'],
             'traffic_flow_id' => ['nullable', 'integer'],
-            'mode'            => ['required', 'in:cf,dns,sw_cf,cf_only,sw_only'],
+            'mode'            => ['required', 'in:cf,sw,cf_sw,sw_cf'],
             'server_ip'       => ['nullable', 'ip'],
             'cf_proxy_ip'     => ['nullable', 'ip'],
-            // stormwall_ip is populated automatically from the StormWall API in dns/sw modes
+            // stormwall_ip is populated automatically from the StormWall API in sw/cf_sw modes
         ];
     }
 

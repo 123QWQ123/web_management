@@ -95,13 +95,13 @@
                         $swIp = $domain->stormwall_ip;
 
                         // Does this mode require CF NS at registrar?
-                        $cfModes = ['cf','dns','cf_only','sw_cf'];
+                        $cfModes = ['cf', 'sw_cf', 'cf_sw'];
                         $needsCfNs   = in_array($domain->mode, $cfModes);
-                        $needsSwA    = $domain->mode === 'sw_only';
+                        $needsSwA    = $domain->mode === 'sw';
 
                         // What did the registrar need BEFORE a switch?
                         $prevNeedsCfNs = $domain->previous_mode && in_array($domain->previous_mode, $cfModes);
-                        $prevNeedsSwA  = $domain->previous_mode === 'sw_only';
+                        $prevNeedsSwA  = $domain->previous_mode === 'sw';
 
                         // Do registrar settings need to change after the switch?
                         $registrarChanged = $domain->previous_mode && (
@@ -237,22 +237,20 @@
 @php
 function modeBadgePhp(string $mode): string {
     return match($mode) {
-        'cf'      => '<span class="badge bg-warning text-dark">CF Proxied</span>',
-        'dns'     => '<span class="badge bg-info text-dark">DNS + SW</span>',
-        'sw_cf'   => '<span class="badge badge-mode-sw_cf">SW → CF</span>',
-        'cf_only' => '<span class="badge bg-warning text-dark">CF Only</span>',
-        'sw_only' => '<span class="badge badge-mode-sw_only">SW Only</span>',
-        default   => '<span class="badge bg-secondary">' . e($mode) . '</span>',
+        'cf'    => '<span class="badge bg-warning text-dark">☁️ CF → Backend</span>',
+        'sw'    => '<span class="badge badge-mode-sw_only">🛡️ SW → Backend</span>',
+        'cf_sw' => '<span class="badge bg-info text-dark">🔀 CF → SW</span>',
+        'sw_cf' => '<span class="badge badge-mode-sw_cf">⚡ SW → CF</span>',
+        default => '<span class="badge bg-secondary">' . e($mode) . '</span>',
     };
 }
 
 function switchTargets(string $mode): array {
     $all = [
-        'cf'      => '☁️ CF Proxied — Cloudflare принимает трафик → бэкенд',
-        'dns'     => '🔀 DNS + SW — CF DNS → StormWall → бэкенд',
-        'sw_cf'   => '⚡ SW → CF → бэкенд',
-        'cf_only' => '🔒 CF Only (failover)',
-        'sw_only' => '🛡️ SW Only (failover)',
+        'cf'    => '☁️ CF → Backend',
+        'sw'    => '🛡️ SW → Backend',
+        'cf_sw' => '🔀 CF → SW → Backend',
+        'sw_cf' => '⚡ SW → CF → Backend',
     ];
     unset($all[$mode]);
     return $all;
@@ -273,21 +271,20 @@ function statusBadge(status) {
 
 function modeBadge(mode) {
     var badges = {
-        cf:      '<span class="badge bg-warning text-dark">CF Proxied</span>',
-        dns:     '<span class="badge bg-info text-dark">DNS + SW</span>',
-        sw_cf:   '<span class="badge badge-mode-sw_cf">SW → CF</span>',
-        cf_only: '<span class="badge bg-warning text-dark">CF Only</span>',
-        sw_only: '<span class="badge badge-mode-sw_only">SW Only</span>',
+        cf:    '<span class="badge bg-warning text-dark">☁️ CF → Backend</span>',
+        sw:    '<span class="badge badge-mode-sw_only">🛡️ SW → Backend</span>',
+        cf_sw: '<span class="badge bg-info text-dark">🔀 CF → SW</span>',
+        sw_cf: '<span class="badge badge-mode-sw_cf">⚡ SW → CF</span>',
     };
     return badges[mode] || '<span class="badge bg-secondary">' + mode + '</span>';
 }
 
-var CF_MODES = { cf: 1, dns: 1, cf_only: 1, sw_cf: 1 };
+var CF_MODES = { cf: 1, sw_cf: 1, cf_sw: 1 };
 
 function registrarCell(d) {
     var html      = '';
     var needsCfNs = !!CF_MODES[d.mode];
-    var needsSwA  = d.mode === 'sw_only';
+    var needsSwA  = d.mode === 'sw';
     var ns        = d.cloudflare_nameservers || [];
     var swIp      = d.stormwall_ip || '';
 
@@ -394,11 +391,10 @@ function buildRow(d) {
 
 function switchTargetsJs(mode) {
     var all = [
-        { mode: 'cf',      label: '☁️ CF Proxied — Cloudflare принимает трафик → бэкенд' },
-        { mode: 'dns',     label: '🔀 DNS + SW — CF DNS → StormWall → бэкенд' },
-        { mode: 'sw_cf',   label: '⚡ SW → CF → бэкенд' },
-        { mode: 'cf_only', label: '🔒 CF Only (failover)' },
-        { mode: 'sw_only', label: '🛡️ SW Only (failover)' },
+        { mode: 'cf',    label: '☁️ CF → Backend' },
+        { mode: 'sw',    label: '🛡️ SW → Backend' },
+        { mode: 'cf_sw', label: '🔀 CF → SW → Backend' },
+        { mode: 'sw_cf', label: '⚡ SW → CF → Backend' },
     ];
     return all.filter(function(t) { return t.mode !== mode; });
 }

@@ -14,18 +14,17 @@ use Throwable;
 class SwitchTrafficController extends Controller
 {
     // Modes where Cloudflare handles HTTP traffic (proxied)
-    private const CF_MODES = ['cf', 'cf_only', 'sw_cf'];
+    private const CF_MODES = ['cf', 'sw_cf', 'cf_sw'];
 
     // Modes that require a provisioned StormWall domain
-    private const SW_MODES = ['dns', 'sw_cf', 'sw_only'];
+    private const SW_MODES = ['sw', 'sw_cf', 'cf_sw'];
 
     // active_traffic_receiver value per mode
     private const RECEIVER_MAP = [
-        'cf'      => 'cf',
-        'cf_only' => 'cf',
-        'dns'     => 'sw',
-        'sw_cf'   => 'sw',
-        'sw_only' => 'sw',
+        'cf'    => 'cf',
+        'sw'    => 'sw',
+        'sw_cf' => 'sw',
+        'cf_sw' => 'cf', // CF is primary receiver in cf_sw
     ];
 
     public function __construct(
@@ -40,7 +39,7 @@ class SwitchTrafficController extends Controller
     public function switchTraffic(Domain $domain, Request $request): RedirectResponse
     {
         $data = $request->validate([
-            'mode'        => ['required', 'in:cf,dns,cf_only,sw_cf,sw_only'],
+            'mode'        => ['required', 'in:cf,sw,cf_sw,sw_cf'],
             'cf_proxy_ip' => ['nullable', 'ip'],
         ]);
 
@@ -161,8 +160,8 @@ class SwitchTrafficController extends Controller
             throw new \RuntimeException('StormWall не настроен для этого домена. Пересоздайте домен в нужном режиме.');
         }
 
-        // dns mode requires known SW proxy IP for CF DNS update
-        if ($targetMode === 'dns' && ! $domain->stormwall_ip) {
+        // cf_sw mode requires known SW proxy IP for CF DNS update
+        if ($targetMode === 'cf_sw' && ! $domain->stormwall_ip) {
             throw new \RuntimeException('Отсутствует stormwall_ip. Невозможно обновить DNS Cloudflare.');
         }
 
@@ -188,8 +187,8 @@ class SwitchTrafficController extends Controller
     /**
      * Update StormWall backends when mode transitions require a different backend IP.
      *
-     * sw_cf         → cf_proxy_ip is the SW backend (SW sends traffic to CF proxy)
-     * dns / sw_only → server_ip is the SW backend (SW sends traffic directly to backend)
+     * sw_cf      → cf_proxy_ip is the SW backend (SW sends traffic to CF proxy)
+     * sw / cf_sw → server_ip is the SW backend (SW sends traffic directly to backend)
      *
      * We always update backends when the target mode defines a specific SW backend IP,
      * regardless of what the previous mode was. This handles multi-hop scenarios correctly.
@@ -205,11 +204,11 @@ class SwitchTrafficController extends Controller
         if ($targetMode === 'sw_cf') {
             // SW must route to CF proxy IP
             $this->sw->replaceBackends($swId, $domain->cf_proxy_ip);
-        } elseif (in_array($targetMode, ['dns', 'sw_only'])) {
-            // SW must route directly to server backend
+        } elseif (in_array($targetMode, ['sw', 'cf_sw'])) {
+            // Both sw and cf_sw use server_ip as SW backend
             $this->sw->replaceBackends($swId, $domain->server_ip);
         }
-        // cf / cf_only: SW is not in the traffic path — leave backends as-is
+        // cf: SW is not in the traffic path — leave backends as-is
     }
 
     private function applyCfDnsUpdate(Domain $domain, string $targetMode): void
@@ -217,16 +216,16 @@ class SwitchTrafficController extends Controller
         $zoneId = $domain->cloudflare_zone_id;
         $dnsId  = $domain->cloudflare_dns_id;
 
-        // sw_only mode has no CF DNS record to update
-        if (! $zoneId || ! $dnsId || $targetMode === 'sw_only') {
+        // sw mode has no CF DNS record to update
+        if (! $zoneId || ! $dnsId || $targetMode === 'sw') {
             return;
         }
 
         [$ip, $proxied] = match ($targetMode) {
-            'cf', 'cf_only' => [$domain->server_ip, true],
-            'sw_cf'         => [$domain->server_ip, true],
-            'dns'           => [$domain->stormwall_ip, false],
-            default         => [$domain->server_ip, true],
+            'cf'    => [$domain->server_ip, true],
+            'sw_cf' => [$domain->server_ip, true],
+            'cf_sw' => [$domain->stormwall_ip, true],  // CF proxies TO stormwall
+            default => [$domain->server_ip, true],
         };
 
         $this->cf->updateDnsRecord($zoneId, $dnsId, $ip, $proxied);
@@ -242,7 +241,7 @@ class SwitchTrafficController extends Controller
                 if ($restoreCfProxyIp) {
                     $this->sw->replaceBackends($swId, $restoreCfProxyIp);
                 }
-            } elseif (in_array($previousMode, ['dns', 'sw_only'])) {
+            } elseif (in_array($previousMode, ['sw', 'cf_sw'])) {
                 $restoreServerIp = $previousConfig['server_ip'] ?? $domain->server_ip;
                 if ($restoreServerIp) {
                     $this->sw->replaceBackends($swId, $restoreServerIp);
@@ -254,15 +253,15 @@ class SwitchTrafficController extends Controller
         $zoneId = $domain->cloudflare_zone_id;
         $dnsId  = $previousConfig['cloudflare_dns_id'] ?? $domain->cloudflare_dns_id;
 
-        if (! $zoneId || ! $dnsId || $previousMode === 'sw_only') {
+        if (! $zoneId || ! $dnsId || $previousMode === 'sw') {
             return;
         }
 
-        [$ip, $proxied] = match ($previousMode) {
-            'cf', 'cf_only' => [$previousConfig['server_ip'] ?? $domain->server_ip, true],
-            'sw_cf'         => [$previousConfig['server_ip'] ?? $domain->server_ip, true],
-            'dns'           => [$previousConfig['stormwall_ip'] ?? $domain->stormwall_ip, false],
-            default         => [$previousConfig['server_ip'] ?? $domain->server_ip, true],
+                [$ip, $proxied] = match ($previousMode) {
+            'cf'    => [$previousConfig['server_ip'] ?? $domain->server_ip, true],
+            'sw_cf' => [$previousConfig['server_ip'] ?? $domain->server_ip, true],
+            'cf_sw' => [$previousConfig['stormwall_ip'] ?? $domain->stormwall_ip, true],
+            default => [$previousConfig['server_ip'] ?? $domain->server_ip, true],
         };
 
         $this->cf->updateDnsRecord($zoneId, $dnsId, $ip, $proxied);

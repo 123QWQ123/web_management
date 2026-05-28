@@ -64,7 +64,7 @@ class DomainController extends Controller
         $this->rememberIp('cloudflare_proxy_ips',  $data['cf_proxy_ip']  ?? null);
 
         // Set active_traffic_receiver based on mode
-        $data['active_traffic_receiver'] = in_array($data['mode'], ['dns', 'sw_cf', 'sw_only']) ? 'sw' : 'cf';
+        $data['active_traffic_receiver'] = in_array($data['mode'], ['sw', 'sw_cf']) ? 'sw' : 'cf';
 
         $domain = Domain::create($data);
 

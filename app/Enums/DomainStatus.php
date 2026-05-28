@@ -23,8 +23,8 @@ enum DomainStatus: string
     // sw_cf mode: SW backends configured with CF proxy IP as upstream
     case SW_CF_BACKENDS = 'sw_cf_backends';
 
-    // sw_only mode: SW backends configured with server_ip, no CF in chain
-    case SW_ONLY_BACKENDS = 'sw_only_backends';
+    // sw/cf_sw mode: SW backends configured with server_ip, no CF proxy in chain
+    case SW_BACKENDS = 'sw_backends';
 
     case DONE = 'done';
 

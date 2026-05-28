@@ -48,7 +48,7 @@ class DomainOrchestrator
                 DomainStatus::CLOUDFLARE_DNS          => $this->routeAfterDns($domain),
                 DomainStatus::STORMWALL_BACKENDS      => $this->addStormWallBackends($domain),
                 DomainStatus::SW_CF_BACKENDS          => $this->addSwCfBackends($domain),
-                DomainStatus::SW_ONLY_BACKENDS        => $this->addSwOnlyBackends($domain),
+                DomainStatus::SW_BACKENDS             => $this->addSwBackends($domain),
                 DomainStatus::STORMWALL_SSL_REQUESTED => $this->requestStormWallSsl($domain),
                 DomainStatus::WAITING_STORMWALL_SSL   => $this->waitForStormWallSsl($domain),
                 default => null,
@@ -68,10 +68,10 @@ class DomainOrchestrator
 
     // ─── Init ────────────────────────────────────────────────────────────────
 
-    // sw_only skips Cloudflare entirely; all other modes start with a CF zone.
+    // sw skips Cloudflare entirely; all other modes start with a CF zone.
     private function handleInit(Domain $domain): void
     {
-        if ($domain->mode === 'sw_only') {
+        if ($domain->mode === 'sw') {
             $this->createStormWallDomain($domain);
         } else {
             $this->createCloudflareZone($domain);
@@ -103,11 +103,11 @@ class DomainOrchestrator
     }
 
     // After CF zone:
-    //   dns  → create SW domain first (need SW proxy IP for CF DNS)
-    //   others (cf, cf_only, sw_cf) → go straight to CF DNS record
+    //   cf_sw → create SW domain first (need SW proxy IP for CF DNS)
+    //   others (cf, sw_cf) → go straight to CF DNS record
     private function routeAfterZone(Domain $domain): void
     {
-        if ($domain->mode === 'dns') {
+        if ($domain->mode === 'cf_sw') {
             $this->createStormWallDomain($domain);
         } else {
             $this->createOrUpdateCloudflareDns($domain);
@@ -145,16 +145,16 @@ class DomainOrchestrator
     }
 
     // After SW domain is created, routing depends on mode:
-    //   dns     → create CF DNS record (pointing to SW proxy IP)
-    //   sw_cf   → set SW_CF_BACKENDS, dispatch (SW backends use CF proxy IP)
-    //   sw_only → set SW_ONLY_BACKENDS, dispatch (SW backends use server_ip)
+    //   cf_sw  → create CF DNS record (pointing to SW proxy IP, proxied=true)
+    //   sw_cf  → set SW_CF_BACKENDS, dispatch (SW backends use CF proxy IP)
+    //   sw     → set SW_BACKENDS, dispatch (SW backends use server_ip)
     private function routeAfterSwDomain(Domain $domain): void
     {
         match ($domain->mode) {
-            'dns'     => $this->createOrUpdateCloudflareDns($domain),
-            'sw_cf'   => $this->scheduleStep($domain, DomainStatus::SW_CF_BACKENDS, DomainStatus::STORMWALL_DOMAIN->value),
-            'sw_only' => $this->scheduleStep($domain, DomainStatus::SW_ONLY_BACKENDS, DomainStatus::STORMWALL_DOMAIN->value),
-            default   => null,
+            'cf_sw'  => $this->createOrUpdateCloudflareDns($domain),
+            'sw_cf'  => $this->scheduleStep($domain, DomainStatus::SW_CF_BACKENDS, DomainStatus::STORMWALL_DOMAIN->value),
+            'sw'     => $this->scheduleStep($domain, DomainStatus::SW_BACKENDS, DomainStatus::STORMWALL_DOMAIN->value),
+            default  => null,
         };
     }
 
@@ -207,22 +207,22 @@ class DomainOrchestrator
     }
 
     // After CF DNS, routing depends on mode:
-    //   cf / cf_only → DONE
-    //   dns          → STORMWALL_BACKENDS (add SW backends with server_ip)
-    //   sw_cf        → create SW domain (SW backends will point to CF proxy IP)
+    //   cf      → DONE
+    //   cf_sw   → STORMWALL_BACKENDS (add SW backends with server_ip)
+    //   sw_cf   → create SW domain (SW backends will point to CF proxy IP)
     private function routeAfterDns(Domain $domain): void
     {
         match ($domain->mode) {
-            'cf', 'cf_only' => $this->markDone($domain, DomainStatus::CLOUDFLARE_DNS->value),
-            'dns'           => $this->scheduleStep($domain, DomainStatus::STORMWALL_BACKENDS, DomainStatus::CLOUDFLARE_DNS->value),
-            'sw_cf'         => $this->createStormWallDomain($domain),
-            default         => $this->markDone($domain, DomainStatus::CLOUDFLARE_DNS->value),
+            'cf'    => $this->markDone($domain, DomainStatus::CLOUDFLARE_DNS->value),
+            'cf_sw' => $this->scheduleStep($domain, DomainStatus::STORMWALL_BACKENDS, DomainStatus::CLOUDFLARE_DNS->value),
+            'sw_cf' => $this->createStormWallDomain($domain),
+            default => $this->markDone($domain, DomainStatus::CLOUDFLARE_DNS->value),
         };
     }
 
     // ─── StormWall backends ──────────────────────────────────────────────────
 
-    // dns mode: SW backends receive traffic from CF DNS, route to server_ip
+    // cf_sw mode: SW backends receive traffic from CF, route to server_ip
     private function addStormWallBackends(Domain $domain): void
     {
         $stormWallDomainId = (int) $this->requireValue((string) $domain->stormwall_domain_id, 'stormwall_domain_id');
@@ -269,8 +269,8 @@ class DomainOrchestrator
         ]);
     }
 
-    // sw_only mode: SW is the only service, backend = server_ip, no CF
-    private function addSwOnlyBackends(Domain $domain): void
+    // sw mode: SW is the only service, backend = server_ip, no CF
+    private function addSwBackends(Domain $domain): void
     {
         $stormWallDomainId = (int) $this->requireValue((string) $domain->stormwall_domain_id, 'stormwall_domain_id');
         $serverIp          = $this->requireValue($domain->server_ip, 'server_ip');
@@ -279,7 +279,7 @@ class DomainOrchestrator
 
         $domain->update(['status' => DomainStatus::DONE->value]);
 
-        $this->logger->success($domain, DomainStatus::SW_ONLY_BACKENDS->value, [
+        $this->logger->success($domain, DomainStatus::SW_BACKENDS->value, [
             'stormwall_domain_id' => $stormWallDomainId,
             'server_ip'           => $serverIp,
         ], [
@@ -408,23 +408,22 @@ class DomainOrchestrator
     }
 
     // CF DNS target IP depends on mode:
-    //   dns         → SW proxy IP (CF is DNS-only, traffic flows to SW)
-    //   cf/cf_only/sw_cf → server_ip (CF proxies to backend directly)
+    //   cf_sw       → SW proxy IP (CF proxies TO stormwall, then SW routes to server)
+    //   cf / sw_cf  → server_ip (CF proxies to backend directly)
     private function cloudflareTargetIp(Domain $domain): string
     {
-        if ($domain->mode === 'dns') {
+        if ($domain->mode === 'cf_sw') {
             return $this->requireValue($domain->stormwall_ip, 'stormwall_ip');
         }
 
         return $this->requireValue($domain->server_ip, 'server_ip');
     }
 
-    // CF DNS proxied flag:
-    //   dns   → false (CF is DNS-only, passes through to SW)
-    //   others → true (CF proxies traffic)
+    // All CF modes use proxied=true (cf_sw is proxied=true, unlike old dns which was false).
+    // Note: sw mode has no CF DNS, so this method won't be called for it.
     private function isCloudflareProxied(Domain $domain): bool
     {
-        return $domain->mode !== 'dns';
+        return true;
     }
 
     private function requireValue(?string $value, string $field): string
@@ -452,4 +451,3 @@ class DomainOrchestrator
             ->isPast();
     }
 }
-

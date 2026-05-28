@@ -34,16 +34,15 @@
         <div class="mb-3">
             <label class="form-label">Режим маршрутизации</label>
             <select name="mode" id="mode-select" class="form-control">
-                <option value="cf"      {{ old('mode','cf') === 'cf'      ? 'selected' : '' }}>☁️  CF Proxied — Cloudflare принимает трафик → бэкенд</option>
-                <option value="dns"     {{ old('mode')       === 'dns'    ? 'selected' : '' }}>🔀 DNS Only + SW — CF DNS → StormWall → бэкенд</option>
-                <option value="sw_cf"   {{ old('mode')       === 'sw_cf'  ? 'selected' : '' }}>⚡ SW → CF → бэкенд — StormWall принимает трафик, проксирует в CF</option>
-                <option value="cf_only" {{ old('mode')       === 'cf_only'? 'selected' : '' }}>🔒 CF Only (failover) — только Cloudflare, без StormWall</option>
-                <option value="sw_only" {{ old('mode')       === 'sw_only'? 'selected' : '' }}>🛡️  SW Only (failover) — только StormWall, без Cloudflare</option>
+                <option value="cf"    {{ old('mode','cf') === 'cf'    ? 'selected' : '' }}>☁️ CF → Backend — Cloudflare принимает трафик → бэкенд</option>
+                <option value="sw"    {{ old('mode')       === 'sw'   ? 'selected' : '' }}>🛡️ SW → Backend — StormWall принимает трафик → бэкенд</option>
+                <option value="cf_sw" {{ old('mode')       === 'cf_sw'? 'selected' : '' }}>🔀 CF → SW → Backend — CF проксирует на StormWall → бэкенд</option>
+                <option value="sw_cf" {{ old('mode')       === 'sw_cf'? 'selected' : '' }}>⚡ SW → CF → Backend — StormWall → CF → бэкенд</option>
             </select>
             <div id="mode-hint" class="form-text mt-1"></div>
         </div>
 
-        {{-- server_ip: shown for all modes except sw_only-only cases --}}
+        {{-- server_ip: shown for all modes --}}
         <div class="mb-3" id="server-ip-group">
             <label class="form-label" id="server-ip-label">IP сервера (бэкенд)</label>
             <input name="server_ip"
@@ -97,23 +96,22 @@
     var cfProxyGroup  = document.getElementById('cf-proxy-ip-group');
 
     var HINTS = {
-        cf:      '☁️  CF принимает трафик и проксирует его на ваш бэкенд-сервер. NS у регистратора → Cloudflare.',
-        dns:     '🔀 CF выступает как DNS-провайдер (без проксирования). Трафик идёт CF DNS → StormWall → бэкенд. NS у регистратора → Cloudflare.',
-        sw_cf:   '⚡ StormWall принимает трафик и проксирует в Cloudflare, CF отправляет на бэкенд. NS у регистратора → StormWall. Требуется CF Proxy IP.',
-        cf_only: '🔒 Failover: только Cloudflare, StormWall отключён. CF проксирует напрямую на бэкенд. NS → Cloudflare.',
-        sw_only: '🛡️  Failover: только StormWall, Cloudflare не используется. SW проксирует напрямую на бэкенд. NS у регистратора → StormWall.',
+        cf:    '☁️ CF принимает трафик и проксирует его на ваш бэкенд-сервер. NS у регистратора → Cloudflare.',
+        sw:    '🛡️ StormWall принимает трафик и проксирует напрямую на бэкенд. A-запись у регистратора → SW IP.',
+        cf_sw: '🔀 CF принимает трафик (proxied=true), DNS-запись → StormWall proxy IP. SW проксирует на бэкенд. NS у регистратора → Cloudflare.',
+        sw_cf: '⚡ StormWall принимает трафик и проксирует в Cloudflare, CF отправляет на бэкенд. A-запись у регистратора → SW IP. Требуется CF Proxy IP.',
     };
 
     function update() {
         var mode = modeSelect.value;
         modeHint.textContent = HINTS[mode] || '';
 
-        var isSw   = (mode === 'sw_cf' || mode === 'sw_only');
+        var isSw   = (mode === 'sw_cf' || mode === 'sw');
         var isSwCf = (mode === 'sw_cf');
 
         // Server IP visibility and labels
         serverIpLabel.textContent = isSw ? 'IP бэкенд-сервера' : 'IP сервера (бэкенд)';
-        serverIpHint.textContent  = mode === 'dns'
+        serverIpHint.textContent  = mode === 'cf_sw'
             ? 'IP вашего бэкенд-сервера. StormWall Proxy IP будет получен автоматически через API.'
             : mode === 'sw_cf'
             ? 'IP вашего бэкенд-сервера. CF проксирует трафик на этот адрес.'
