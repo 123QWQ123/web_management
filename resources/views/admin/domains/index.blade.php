@@ -77,7 +77,14 @@
                 data-stormwall-ip="{{ $domain->stormwall_ip }}"
                 data-cf-proxy-ip="{{ $domain->cf_proxy_ip }}">
                 <td><strong>{{ $domain->domain }}</strong></td>
-                <td>{!! modeBadgePhp($domain->mode) !!}</td>
+                <td>
+                    {!! modeBadgePhp($domain->mode) !!}
+                    @if($domain->pending_mode)
+                        <br><span class="badge bg-warning text-dark mt-1" style="font-size:.7rem;">
+                            ⏳ ожидает активации NS → {{ $domain->pending_mode }}
+                        </span>
+                    @endif
+                </td>
                 <td>
                     @php
                         $c = match($domain->status) {
@@ -147,6 +154,15 @@
                         @endif
                     @else
                         <span class="text-muted">—</span>
+                    @endif
+
+                    {{-- Pending CF activation notice --}}
+                    @if($domain->pending_mode === 'sw_cf')
+                        <div class="mt-1 p-1 border border-warning rounded small">
+                            <span class="text-warning fw-bold">⏳ Ожидаем активации CF зоны:</span><br>
+                            Прописать NS Cloudflare у регистратора и дождаться активации.<br>
+                            Переключение в <strong>SW → CF → Backend</strong> произойдёт <em>автоматически</em>.
+                        </div>
                     @endif
 
                     {{-- After-switch warning: registrar config needs to change --}}
@@ -269,14 +285,18 @@ function statusBadge(status) {
     return '<span class="badge bg-' + color + '">' + status + '</span>';
 }
 
-function modeBadge(mode) {
+function modeBadge(mode, pendingMode) {
     var badges = {
         cf:    '<span class="badge bg-warning text-dark">☁️ CF → Backend</span>',
         sw:    '<span class="badge badge-mode-sw_only">🛡️ SW → Backend</span>',
         cf_sw: '<span class="badge bg-info text-dark">🔀 CF → SW</span>',
         sw_cf: '<span class="badge badge-mode-sw_cf">⚡ SW → CF</span>',
     };
-    return badges[mode] || '<span class="badge bg-secondary">' + mode + '</span>';
+    var html = badges[mode] || '<span class="badge bg-secondary">' + mode + '</span>';
+    if (pendingMode) {
+        html += '<br><span class="badge bg-warning text-dark mt-1" style="font-size:.7rem;">⏳ NS → ' + pendingMode + '</span>';
+    }
+    return html;
 }
 
 var CF_MODES = { cf: 1, sw_cf: 1, cf_sw: 1 };
@@ -320,7 +340,7 @@ function registrarCell(d) {
     // After-switch warning
     if (d.previous_mode) {
         var prevCfNs = !!CF_MODES[d.previous_mode];
-        var prevSwA  = d.previous_mode === 'sw_only';
+        var prevSwA  = d.previous_mode === 'sw';
         if (needsCfNs && prevSwA) {
             html += '<div class="mt-1 p-1 border border-warning rounded small">' +
                 '<span class="text-warning fw-bold">⚠️ Нужно изменить у регистратора:</span><br>' +
@@ -336,6 +356,15 @@ function registrarCell(d) {
         } else {
             html += '<div class="mt-1"><span class="badge bg-success small">✓ NS не меняются</span></div>';
         }
+    }
+
+    // Pending CF activation notice
+    if (d.pending_mode === 'sw_cf') {
+        html += '<div class="mt-1 p-1 border border-warning rounded small">' +
+            '<span class="text-warning fw-bold">⏳ Ожидаем активации CF зоны:</span><br>' +
+            'Прописать NS Cloudflare у регистратора и дождаться активации.<br>' +
+            'Переключение в <strong>SW → CF → Backend</strong> произойдёт <em>автоматически</em>.' +
+            '</div>';
     }
 
     return html;
@@ -380,7 +409,7 @@ function buildRow(d) {
         ' data-stormwall-ip="' + (d.stormwall_ip || '') + '"' +
         ' data-cf-proxy-ip="' + (d.cf_proxy_ip || '') + '">' +
         '<td><strong>' + d.domain + '</strong></td>' +
-        '<td>' + modeBadge(d.mode) + '</td>' +
+        '<td>' + modeBadge(d.mode, d.pending_mode) + '</td>' +
         '<td>' + statusBadge(d.status) + '</td>' +
         '<td>' + registrarCell(d) + '</td>' +
         '<td>' + (d.stormwall_ip || '—') + '</td>' +
@@ -430,9 +459,9 @@ function refresh() {
             domains.forEach(function(d, idx) {
                 var existing = tbody.querySelector('tr[data-id="' + d.id + '"]');
                 if (existing) {
-                    existing.cells[1].innerHTML = modeBadge(d.mode);
+                    existing.cells[1].innerHTML = modeBadge(d.mode, d.pending_mode);
                     existing.cells[2].innerHTML = statusBadge(d.status);
-                    existing.cells[3].innerHTML = nsCells(d.id, d.cloudflare_nameservers);
+                    existing.cells[3].innerHTML = registrarCell(d);
                     existing.cells[4].textContent = d.stormwall_ip || '—';
                     existing.dataset.serverIp    = d.server_ip    || '';
                     existing.dataset.stormwallIp = d.stormwall_ip || '';

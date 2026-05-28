@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Admin;
 
+use App\Jobs\PollCfActivationJob;
 use App\Models\Domain;
 use App\Services\Cloudflare\Contracts\CloudflareServiceInterface;
 use App\Services\StormWall\Contracts\StormWallServiceInterface;
@@ -53,32 +54,26 @@ class SwitchTrafficController extends Controller
             return redirect()->back()->with('error', "Домен уже работает в режиме [{$targetMode}].");
         }
 
-        // For sw_cf mode: cf_proxy_ip is required.
-        // 1) Use value from form if provided, 2) otherwise auto-resolve via CF nameservers.
-        if ($targetMode === 'sw_cf' && ! $domain->cf_proxy_ip) {
-            if (! empty($data['cf_proxy_ip'])) {
-                $domain->cf_proxy_ip = $data['cf_proxy_ip'];
-                $domain->save();
-            } elseif (! empty($domain->cloudflare_nameservers) && $domain->cloudflare_zone_id) {
-                $resolved = $this->cf->resolveProxiedIp($domain->domain, $domain->cloudflare_nameservers);
-                if ($resolved) {
-                    $domain->cf_proxy_ip = $resolved;
-                    $domain->save();
-                    Log::channel('domain')->info('cf_proxy_ip auto-resolved', [
-                        'domain'      => $domain->domain,
-                        'cf_proxy_ip' => $resolved,
-                    ]);
-                }
-            }
-        } elseif ($targetMode === 'sw_cf' && ! empty($data['cf_proxy_ip'])) {
-            // Update if a new value was explicitly provided
+        // For sw_cf mode: cf_proxy_ip can be provided manually via modal.
+        // Auto-resolution happens inside applyCfDnsSwitch (after CF DNS is updated to server_ip).
+        if ($targetMode === 'sw_cf' && ! empty($data['cf_proxy_ip'])) {
             $domain->cf_proxy_ip = $data['cf_proxy_ip'];
             $domain->save();
         }
 
         try {
+            // If target mode needs CF but zone doesn't exist yet (e.g. switching from sw),
+            // provision CF zone + DNS record now before running precondition checks.
+            if (in_array($targetMode, self::CF_MODES) && ! $domain->cloudflare_zone_id) {
+                $this->provisionCloudflareZone($domain, $targetMode);
+            }
+
             $this->validateSwitchPreconditions($domain, $targetMode);
             $this->applyCfDnsSwitch($domain, $targetMode);
+        } catch (\App\Exceptions\PendingCfActivationException $e) {
+            // Partial success: mode set to 'cf', polling job launched, waiting for NS activation
+            return redirect()->route('admin.domains.index')
+                ->with('status', "Домен [{$domain->domain}]: CF зона ожидает активации NS. Добавьте NS у регистратора: {$e->getMessage()}. Режим SW → CF будет применён автоматически после активации.");
         } catch (Throwable $e) {
             Log::channel('domain')->error('Traffic switch failed', [
                 'domain'      => $domain->domain,
@@ -151,6 +146,68 @@ class SwitchTrafficController extends Controller
             ->with('status', "Домен [{$domain->domain}]: режим восстановлен [{$currentMode}] → [{$previousMode}].");
     }
 
+    // ─── CF zone provisioning on-the-fly ────────────────────────────────────
+
+    /**
+     * Create CF zone + DNS record for a domain that has none (e.g. was in sw mode).
+     * After this method the domain will have cloudflare_zone_id, cloudflare_dns_id,
+     * cloudflare_nameservers set in the database.
+     */
+    private function provisionCloudflareZone(Domain $domain, string $targetMode): void
+    {
+        // Check if zone already exists in CF (idempotent)
+        $existingZoneId = $this->cf->findZoneByName($domain->domain);
+
+        if ($existingZoneId) {
+            $domain->cloudflare_zone_id = $existingZoneId;
+        } else {
+            $zone = $this->cf->createZone($domain->domain);
+            $this->cf->applyZoneSettings($zone->id);
+            $domain->cloudflare_zone_id      = $zone->id;
+            $domain->cloudflare_nameservers  = $zone->nameservers ?: null;
+        }
+
+        $domain->save();
+
+        // Determine DNS target based on target mode
+        [$ip, $proxied] = match ($targetMode) {
+            'cf_sw' => [$domain->stormwall_ip, true],   // CF → SW → Backend
+            default => [$domain->server_ip, true],       // cf, sw_cf → server_ip
+        };
+
+        if (! $ip) {
+            throw new \RuntimeException(
+                $targetMode === 'cf_sw'
+                    ? 'Отсутствует stormwall_ip. Невозможно настроить CF → SW режим.'
+                    : 'Отсутствует server_ip. Невозможно создать DNS запись Cloudflare.'
+            );
+        }
+
+        $existing = $this->cf->findDnsRecord($domain->cloudflare_zone_id, $domain->domain);
+        $record = $existing
+            ? $this->cf->updateDnsRecord($domain->cloudflare_zone_id, $existing->id, $ip, $proxied)
+            : $this->cf->createDnsRecord($domain->cloudflare_zone_id, $domain->domain, $ip, $proxied);
+
+        $domain->cloudflare_dns_id = $record->id;
+        $domain->save();
+
+        // Auto-resolve cf_proxy_ip for sw_cf mode
+        if ($targetMode === 'sw_cf' && ! $domain->cf_proxy_ip && ! empty($domain->cloudflare_nameservers)) {
+            $resolved = $this->cf->resolveProxiedIp($domain->domain, $domain->cloudflare_nameservers);
+            if ($resolved) {
+                $domain->cf_proxy_ip = $resolved;
+                $domain->save();
+            }
+        }
+
+        Log::channel('domain')->info('CF zone provisioned on-the-fly during switch', [
+            'domain'             => $domain->domain,
+            'cloudflare_zone_id' => $domain->cloudflare_zone_id,
+            'cloudflare_dns_id'  => $domain->cloudflare_dns_id,
+            'target_mode'        => $targetMode,
+        ]);
+    }
+
     // ─── Precondition checks ─────────────────────────────────────────────────
 
     private function validateSwitchPreconditions(Domain $domain, string $targetMode): void
@@ -164,24 +221,82 @@ class SwitchTrafficController extends Controller
         if ($targetMode === 'cf_sw' && ! $domain->stormwall_ip) {
             throw new \RuntimeException('Отсутствует stormwall_ip. Невозможно обновить DNS Cloudflare.');
         }
-
-        // sw_cf mode requires cf_proxy_ip to configure SW backends correctly
-        if ($targetMode === 'sw_cf' && ! $domain->cf_proxy_ip) {
-            throw new \RuntimeException('Отсутствует cf_proxy_ip. Невозможно настроить SW → CF режим.');
-        }
-
-        // CF-based modes require a provisioned CF zone
-        if (in_array($targetMode, self::CF_MODES) && ! $domain->cloudflare_zone_id) {
-            throw new \RuntimeException('Cloudflare зона не настроена для этого домена.');
-        }
+        // Note: cf_proxy_ip for sw_cf is validated after CF DNS update inside applyCfDnsSwitch
     }
 
     // ─── CF DNS + SW backend changes on switch ───────────────────────────────
 
     private function applyCfDnsSwitch(Domain $domain, string $targetMode): void
     {
-        $this->applySwBackendSwitch($domain, $targetMode);
-        $this->applyCfDnsUpdate($domain, $targetMode);
+        if ($targetMode === 'sw_cf') {
+            // For SW → CF → Backend, the correct order is:
+            // 1. Update CF DNS → server_ip (proxied) first so CF serves the right origin
+            // 2. Auto-resolve CF anycast IP (now CF NS will return a real CF range IP)
+            // 3. Update SW backends to point to that CF anycast IP
+            $this->applyCfDnsUpdate($domain, $targetMode);
+
+            // If cf_proxy_ip is still not set, try resolving now that CF DNS is correct
+            if (! $domain->cf_proxy_ip && ! empty($domain->cloudflare_nameservers)) {
+                $resolved = $this->cf->resolveProxiedIp($domain->domain, $domain->cloudflare_nameservers);
+                if ($resolved) {
+                    $domain->cf_proxy_ip = $resolved;
+                    $domain->save();
+                    Log::channel('domain')->info('cf_proxy_ip resolved after CF DNS update', [
+                        'domain'      => $domain->domain,
+                        'cf_proxy_ip' => $resolved,
+                    ]);
+                }
+            }
+
+            if (! $domain->cf_proxy_ip) {
+                // CF zone is pending (NS not yet changed at registrar).
+                // Initiate the deferred activation flow:
+                // 1. Switch current mode to 'cf' so CF starts serving once NS are set
+                // 2. Store 'sw_cf' as pending_mode
+                // 3. Launch polling job — when zone becomes active it will complete the switch
+                $this->handlePendingCfActivation($domain);
+                return;
+            }
+
+            $this->applySwBackendSwitch($domain, $targetMode);
+        } else {
+            $this->applySwBackendSwitch($domain, $targetMode);
+            $this->applyCfDnsUpdate($domain, $targetMode);
+        }
+    }
+
+    /**
+     * CF zone is pending (NS not yet changed at registrar).
+     * Switch domain to 'cf' mode as intermediate state, store 'sw_cf' as pending_mode,
+     * and dispatch PollCfActivationJob to complete the transition automatically once active.
+     *
+     * Throws PendingCfActivationException to signal the caller to use a different success message.
+     */
+    private function handlePendingCfActivation(Domain $domain): void
+    {
+        // DNS record already set to server_ip + proxied in applyCfDnsUpdate above.
+        // We just need to record the intent and start polling.
+
+        $domain->update([
+            'mode'                   => 'cf',
+            'previous_mode'          => $domain->mode,
+            'previous_config'        => $this->snapshotConfig($domain),
+            'active_traffic_receiver' => 'cf',
+            'pending_mode'           => 'sw_cf',
+        ]);
+
+        PollCfActivationJob::dispatch($domain->id);
+
+        Log::channel('domain')->info('PendingCfActivation: deferred sw_cf switch started', [
+            'domain'     => $domain->domain,
+            'zone_id'    => $domain->cloudflare_zone_id,
+            'nameservers' => $domain->cloudflare_nameservers,
+        ]);
+
+        // Signal that mode was partially applied; throw to prevent duplicate domain->update() in switchTraffic()
+        throw new \App\Exceptions\PendingCfActivationException(
+            implode(', ', $domain->cloudflare_nameservers ?? [])
+        );
     }
 
     /**
@@ -214,10 +329,9 @@ class SwitchTrafficController extends Controller
     private function applyCfDnsUpdate(Domain $domain, string $targetMode): void
     {
         $zoneId = $domain->cloudflare_zone_id;
-        $dnsId  = $domain->cloudflare_dns_id;
 
         // sw mode has no CF DNS record to update
-        if (! $zoneId || ! $dnsId || $targetMode === 'sw') {
+        if (! $zoneId || $targetMode === 'sw') {
             return;
         }
 
@@ -228,7 +342,19 @@ class SwitchTrafficController extends Controller
             default => [$domain->server_ip, true],
         };
 
-        $this->cf->updateDnsRecord($zoneId, $dnsId, $ip, $proxied);
+        $dnsId = $domain->cloudflare_dns_id;
+
+        if ($dnsId) {
+            $record = $this->cf->updateDnsRecord($zoneId, $dnsId, $ip, $proxied);
+        } else {
+            // Zone exists but DNS record missing — create it
+            $existing = $this->cf->findDnsRecord($zoneId, $domain->domain);
+            $record = $existing
+                ? $this->cf->updateDnsRecord($zoneId, $existing->id, $ip, $proxied)
+                : $this->cf->createDnsRecord($zoneId, $domain->domain, $ip, $proxied);
+            $domain->cloudflare_dns_id = $record->id;
+            $domain->save();
+        }
     }
 
     private function applyCfDnsRevert(Domain $domain, string $previousMode, array $previousConfig): void

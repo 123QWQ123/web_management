@@ -34,6 +34,15 @@ class CloudflareService implements CloudflareServiceInterface
         $this->client->request('patch', "/zones/{$zoneId}/settings/min_tls_version", ['value' => '1.2']);
     }
 
+    /**
+     * Returns the CF zone status: 'active', 'pending', 'initializing', 'moved', 'deleted', 'deactivated'.
+     */
+    public function getZoneStatus(string $zoneId): string
+    {
+        $res = $this->client->request('get', "/zones/{$zoneId}");
+        return $res['result']['status'] ?? 'pending';
+    }
+
     public function createDnsRecord(
         string $zoneId,
         string $name,
@@ -106,22 +115,52 @@ class CloudflareService implements CloudflareServiceInterface
      */
     public function resolveProxiedIp(string $domain, array $nameservers): ?string
     {
+        $escapedDomain = escapeshellarg(trim($domain));
         foreach ($nameservers as $ns) {
-            $ns     = escapeshellarg(trim($ns));
-            $domain = escapeshellarg(trim($domain));
+            $escapedNs = escapeshellarg(trim($ns));
             // Query CF's own NS directly; +short returns just the IP(s)
-            $output = shell_exec("dig +short +time=3 +tries=1 @{$ns} {$domain} A 2>/dev/null");
+            $output = shell_exec("dig +short +time=3 +tries=1 @{$escapedNs} {$escapedDomain} A 2>/dev/null");
 
             if ($output) {
                 $ips = array_filter(array_map('trim', explode("\n", $output)));
                 // dig may return a CNAME chain before the final A record — take the last line
                 $ip = end($ips);
-                if ($ip && filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+                if ($ip && filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) && self::isCloudflareIp($ip)) {
                     return $ip;
                 }
             }
         }
 
         return null;
+    }
+
+    /**
+     * Returns true if the given IP belongs to a known Cloudflare anycast range.
+     * Source: https://www.cloudflare.com/ips-v4/
+     * Used to avoid accepting backend/origin IPs as the CF proxy IP.
+     */
+    private static function isCloudflareIp(string $ip): bool
+    {
+        static $ranges = [
+            ['103.21.244.0', 22], ['103.22.200.0', 22], ['103.31.4.0', 22],
+            ['104.16.0.0', 13],   ['104.24.0.0', 14],   ['108.162.192.0', 18],
+            ['131.0.72.0', 22],   ['141.101.64.0', 18], ['162.158.0.0', 15],
+            ['172.64.0.0', 13],   ['173.245.48.0', 20], ['188.114.96.0', 20],
+            ['190.93.240.0', 20], ['197.234.240.0', 22], ['198.41.128.0', 17],
+        ];
+
+        $long = ip2long($ip);
+        if ($long === false) {
+            return false;
+        }
+
+        foreach ($ranges as [$base, $bits]) {
+            $mask = -1 << (32 - $bits);
+            if ((ip2long($base) & $mask) === ($long & $mask)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

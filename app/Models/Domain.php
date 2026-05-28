@@ -23,6 +23,7 @@ class Domain extends Model
         'server_ip',
         'stormwall_ip',
         'cf_proxy_ip',
+        'pending_mode',
         'ssl_requested_at',
         'ssl_ready_at',
         'next_attempt_at',

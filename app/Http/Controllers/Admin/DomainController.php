@@ -35,6 +35,7 @@ class DomainController extends Controller
                 'domain'                  => $d->domain,
                 'mode'                    => $d->mode,
                 'previous_mode'           => $d->previous_mode,
+                'pending_mode'            => $d->pending_mode,
                 'active_traffic_receiver' => $d->active_traffic_receiver,
                 'status'                  => $d->status,
                 'cloudflare_nameservers'  => $d->cloudflare_nameservers ?? [],
@@ -48,11 +49,10 @@ class DomainController extends Controller
 
     public function create()
     {
-        $serverIps      = Setting::where('key', 'server_ips')->first()?->value ?? [];
-        $stormwallIps   = Setting::where('key', 'stormwall_ips')->first()?->value ?? [];
-        $cfProxyIps     = Setting::where('key', 'cloudflare_proxy_ips')->first()?->value ?? [];
+        $serverIps  = Setting::where('key', 'server_ips')->first()?->value ?? [];
+        $cfProxyIps = Setting::where('key', 'cloudflare_proxy_ips')->first()?->value ?? [];
 
-        return view('admin.domains.create', compact('serverIps', 'stormwallIps', 'cfProxyIps'));
+        return view('admin.domains.create', compact('serverIps', 'cfProxyIps'));
     }
 
     public function store(StoreDomainRequest $request): RedirectResponse

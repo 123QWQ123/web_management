@@ -48,6 +48,13 @@ interface CloudflareServiceInterface
 
     ): ?DnsRecordData;
 
+    public function applyZoneSettings(string $zoneId): void;
+
+    /**
+     * Returns the CF zone status: 'active', 'pending', 'initializing', 'moved', 'deleted', 'deactivated'.
+     */
+    public function getZoneStatus(string $zoneId): string;
+
     /**
      * Resolve the Cloudflare anycast proxy IP assigned to a proxied domain.
      * Queries CF's own nameservers directly — no registrar NS change required.
