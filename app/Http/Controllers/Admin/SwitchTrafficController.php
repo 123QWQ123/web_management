@@ -164,8 +164,11 @@ class SwitchTrafficController extends Controller
     /**
      * Update StormWall backends when mode transitions require a different backend IP.
      *
-     * dns / sw_only → server_ip is the SW backend
-     * sw_cf         → cf_proxy_ip is the SW backend (SW sends traffic to CF)
+     * sw_cf         → cf_proxy_ip is the SW backend (SW sends traffic to CF proxy)
+     * dns / sw_only → server_ip is the SW backend (SW sends traffic directly to backend)
+     *
+     * We always update backends when the target mode defines a specific SW backend IP,
+     * regardless of what the previous mode was. This handles multi-hop scenarios correctly.
      */
     private function applySwBackendSwitch(Domain $domain, string $targetMode): void
     {
@@ -178,11 +181,11 @@ class SwitchTrafficController extends Controller
         if ($targetMode === 'sw_cf') {
             // SW must route to CF proxy IP
             $this->sw->replaceBackends($swId, $domain->cf_proxy_ip);
-        } elseif (in_array($targetMode, ['dns', 'sw_only']) && $domain->mode === 'sw_cf') {
-            // Coming FROM sw_cf: restore SW backends to server_ip
+        } elseif (in_array($targetMode, ['dns', 'sw_only'])) {
+            // SW must route directly to server backend
             $this->sw->replaceBackends($swId, $domain->server_ip);
         }
-        // All other transitions: SW backends stay as-is (either unused or already correct)
+        // cf / cf_only: SW is not in the traffic path — leave backends as-is
     }
 
     private function applyCfDnsUpdate(Domain $domain, string $targetMode): void
@@ -215,7 +218,7 @@ class SwitchTrafficController extends Controller
                 if ($restoreCfProxyIp) {
                     $this->sw->replaceBackends($swId, $restoreCfProxyIp);
                 }
-            } elseif (in_array($previousMode, ['dns', 'sw_only']) && $domain->mode === 'sw_cf') {
+            } elseif (in_array($previousMode, ['dns', 'sw_only'])) {
                 $restoreServerIp = $previousConfig['server_ip'] ?? $domain->server_ip;
                 if ($restoreServerIp) {
                     $this->sw->replaceBackends($swId, $restoreServerIp);
