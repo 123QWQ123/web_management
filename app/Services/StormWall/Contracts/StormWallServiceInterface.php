@@ -23,6 +23,14 @@ interface StormWallServiceInterface
 
     public function addBackends(int $domainId, string $serverIp): void;
 
+    /** Returns list of backend records: [['id' => int, 'ip' => string], ...] */
+    public function listBackends(int $domainId): array;
+
+    public function deleteBackend(int $domainId, int $backendId): void;
+
+    /** Deletes all existing backends and adds one with the new IP. */
+    public function replaceBackends(int $domainId, string $newIp): void;
+
     public function createDomain(CreateDomainData $data): StormWallDomainData;
 
     public function deleteDomain(int $domainId): void;

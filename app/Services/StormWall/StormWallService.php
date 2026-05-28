@@ -71,6 +71,38 @@ class StormWallService implements StormWallServiceInterface
         $this->addBackend($domainId, BackendData::fromConfig($serverIp));
     }
 
+    public function listBackends(int $domainId): array
+    {
+        $serviceId = $this->serviceId();
+        $response  = $this->client->request('get', "/v3/domains/{$domainId}/backends?serviceId={$serviceId}");
+
+        return data_get($response, 'payload.results', data_get($response, 'payload', []));
+    }
+
+    public function deleteBackend(int $domainId, int $backendId): void
+    {
+        $serviceId = $this->serviceId();
+        $this->client->request('delete', "/v3/domains/{$domainId}/backends/{$backendId}?serviceId={$serviceId}");
+    }
+
+    public function replaceBackends(int $domainId, string $newIp): void
+    {
+        $existing = $this->listBackends($domainId);
+
+        foreach ($existing as $backend) {
+            $id = $backend['id'] ?? null;
+            if ($id) {
+                try {
+                    $this->deleteBackend($domainId, (int) $id);
+                } catch (\Throwable) {
+                    // Non-fatal: best-effort cleanup
+                }
+            }
+        }
+
+        $this->addBackend($domainId, BackendData::fromConfig($newIp));
+    }
+
     public function getDomain(int $domainId): ?StormWallDomainData
     {
         $response = $this->client->request('get', "/v3/domains/{$domainId}");

@@ -62,7 +62,7 @@
                 <th>Домен</th>
                 <th>Режим</th>
                 <th>Статус</th>
-                <th>Cloudflare NS <span class="text-warning">(&#8594; регистратор)</span></th>
+                <th>У регистратора</th>
                 <th>SW Proxy IP</th>
                 <th>IP сервера</th>
                 <th>Добавлен</th>
@@ -90,18 +90,86 @@
                     <span class="badge bg-{{ $c }}">{{ $domain->status }}</span>
                 </td>
                 <td>
-                    @forelse($ns as $i => $server)
-                        <div class="d-flex align-items-center gap-1 mb-1">
-                            <code class="flex-grow-1" id="ns-{{ $domain->id }}-{{ $i }}">{{ $server }}</code>
-                            <button type="button"
-                                    class="btn btn-sm btn-outline-secondary py-0 px-1"
-                                    onclick="copyNs('ns-{{ $domain->id }}-{{ $i }}', this)">&#128203;</button>
-                        </div>
-                    @empty
+                    @php
+                        $ns  = $domain->cloudflare_nameservers ?? [];
+                        $swIp = $domain->stormwall_ip;
+
+                        // Does this mode require CF NS at registrar?
+                        $cfModes = ['cf','dns','cf_only','sw_cf'];
+                        $needsCfNs   = in_array($domain->mode, $cfModes);
+                        $needsSwA    = $domain->mode === 'sw_only';
+
+                        // What did the registrar need BEFORE a switch?
+                        $prevNeedsCfNs = $domain->previous_mode && in_array($domain->previous_mode, $cfModes);
+                        $prevNeedsSwA  = $domain->previous_mode === 'sw_only';
+
+                        // Do registrar settings need to change after the switch?
+                        $registrarChanged = $domain->previous_mode && (
+                            ($needsCfNs  && $prevNeedsSwA)  ||  // sw_only → CF mode
+                            ($needsSwA   && $prevNeedsCfNs)     // CF mode → sw_only
+                        );
+                    @endphp
+
+                    {{-- Current registrar config --}}
+                    @if($needsCfNs)
+                        @forelse($ns as $i => $server)
+                            <div class="d-flex align-items-center gap-1 mb-1">
+                                <code class="flex-grow-1" id="ns-{{ $domain->id }}-{{ $i }}">{{ $server }}</code>
+                                <button type="button"
+                                        class="btn btn-sm btn-outline-secondary py-0 px-1"
+                                        onclick="copyNs('ns-{{ $domain->id }}-{{ $i }}', this)">&#128203;</button>
+                            </div>
+                        @empty
+                            <span class="text-muted small">NS ещё не получены</span>
+                        @endforelse
+                        @if(!empty($ns))
+                            <div class="mt-1">
+                                <span class="badge bg-info text-dark">
+                                    ☁️ Прописать NS Cloudflare у регистратора
+                                </span>
+                            </div>
+                        @endif
+                    @elseif($needsSwA)
+                        @if($swIp)
+                            <div class="d-flex align-items-center gap-1 mb-1">
+                                <code class="flex-grow-1" id="ns-{{ $domain->id }}-sw">{{ $swIp }}</code>
+                                <button type="button"
+                                        class="btn btn-sm btn-outline-secondary py-0 px-1"
+                                        onclick="copyNs('ns-{{ $domain->id }}-sw', this)">&#128203;</button>
+                            </div>
+                            <div class="mt-1">
+                                <span class="badge bg-secondary">
+                                    🛡️ A-запись → SW IP у регистратора
+                                </span>
+                            </div>
+                        @else
+                            <span class="text-muted small">SW IP ещё не получен</span>
+                        @endif
+                    @else
                         <span class="text-muted">—</span>
-                    @endforelse
-                    @if(!empty($ns))
-                        <div class="mt-1"><span class="badge bg-warning text-dark">Прописать у регистратора</span></div>
+                    @endif
+
+                    {{-- After-switch warning: registrar config needs to change --}}
+                    @if($registrarChanged)
+                        <div class="mt-1 p-1 border border-warning rounded small">
+                            <span class="text-warning fw-bold">⚠️ Нужно изменить у регистратора:</span><br>
+                            @if($needsCfNs && $prevNeedsSwA)
+                                Удалить A-запись → заменить на NS Cloudflare ☁️
+                                @if(!empty($ns))
+                                    @foreach($ns as $s)
+                                        <br><code class="small">{{ $s }}</code>
+                                    @endforeach
+                                @endif
+                            @elseif($needsSwA && $prevNeedsCfNs)
+                                Удалить NS Cloudflare → прописать A-запись 🛡️<br>
+                                @if($swIp)<code class="small">{{ $swIp }}</code>@endif
+                            @endif
+                        </div>
+                    @elseif($domain->previous_mode && !$registrarChanged)
+                        {{-- Switch happened but NS don't change (within CF modes) --}}
+                        <div class="mt-1">
+                            <span class="badge bg-success small">✓ NS не меняются</span>
+                        </div>
                     @endif
                 </td>
                 <td>{{ $domain->stormwall_ip ?? '—' }}</td>
@@ -204,17 +272,65 @@ function modeBadge(mode) {
     return badges[mode] || '<span class="badge bg-secondary">' + mode + '</span>';
 }
 
-function nsCells(domainId, nameservers) {
-    if (!nameservers || nameservers.length === 0) return '<span class="text-muted">—</span>';
-    var html = '';
-    nameservers.forEach(function(ns, i) {
-        var id = 'ns-' + domainId + '-' + i;
-        html += '<div class="d-flex align-items-center gap-1 mb-1">' +
-            '<code class="flex-grow-1" id="' + id + '">' + ns + '</code>' +
-            '<button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1"' +
-            ' onclick="copyNs(\'' + id + '\', this)">&#128203;</button></div>';
-    });
-    html += '<div class="mt-1"><span class="badge bg-warning text-dark">Прописать у регистратора</span></div>';
+var CF_MODES = { cf: 1, dns: 1, cf_only: 1, sw_cf: 1 };
+
+function registrarCell(d) {
+    var html      = '';
+    var needsCfNs = !!CF_MODES[d.mode];
+    var needsSwA  = d.mode === 'sw_only';
+    var ns        = d.cloudflare_nameservers || [];
+    var swIp      = d.stormwall_ip || '';
+
+    // Current config
+    if (needsCfNs) {
+        if (ns.length) {
+            ns.forEach(function(server, i) {
+                var id = 'ns-' + d.id + '-' + i;
+                html += '<div class="d-flex align-items-center gap-1 mb-1">' +
+                    '<code class="flex-grow-1" id="' + id + '">' + server + '</code>' +
+                    '<button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1"' +
+                    ' onclick="copyNs(\'' + id + '\', this)">&#128203;</button></div>';
+            });
+            html += '<div class="mt-1"><span class="badge bg-info text-dark">☁️ Прописать NS Cloudflare у регистратора</span></div>';
+        } else {
+            html += '<span class="text-muted small">NS ещё не получены</span>';
+        }
+    } else if (needsSwA) {
+        if (swIp) {
+            var swId = 'ns-' + d.id + '-sw';
+            html += '<div class="d-flex align-items-center gap-1 mb-1">' +
+                '<code class="flex-grow-1" id="' + swId + '">' + swIp + '</code>' +
+                '<button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1"' +
+                ' onclick="copyNs(\'' + swId + '\', this)">&#128203;</button></div>' +
+                '<div class="mt-1"><span class="badge bg-secondary">🛡️ A-запись → SW IP у регистратора</span></div>';
+        } else {
+            html += '<span class="text-muted small">SW IP ещё не получен</span>';
+        }
+    } else {
+        html += '<span class="text-muted">—</span>';
+    }
+
+    // After-switch warning
+    if (d.previous_mode) {
+        var prevCfNs = !!CF_MODES[d.previous_mode];
+        var prevSwA  = d.previous_mode === 'sw_only';
+        if (needsCfNs && prevSwA) {
+            html += '<div class="mt-1 p-1 border border-warning rounded small">' +
+                '<span class="text-warning fw-bold">⚠️ Нужно изменить у регистратора:</span><br>' +
+                'Удалить A-запись → заменить на NS Cloudflare ☁️' +
+                (ns.length ? '<br>' + ns.map(function(s) { return '<code class="small">' + s + '</code>'; }).join('<br>') : '') +
+                '</div>';
+        } else if (needsSwA && prevCfNs) {
+            html += '<div class="mt-1 p-1 border border-warning rounded small">' +
+                '<span class="text-warning fw-bold">⚠️ Нужно изменить у регистратора:</span><br>' +
+                'Удалить NS Cloudflare → прописать A-запись 🛡️' +
+                (swIp ? '<br><code class="small">' + swIp + '</code>' : '') +
+                '</div>';
+        } else {
+            html += '<div class="mt-1"><span class="badge bg-success small">✓ NS не меняются</span></div>';
+        }
+    }
+
     return html;
 }
 
@@ -254,7 +370,7 @@ function buildRow(d) {
         '<td><strong>' + d.domain + '</strong></td>' +
         '<td>' + modeBadge(d.mode) + '</td>' +
         '<td>' + statusBadge(d.status) + '</td>' +
-        '<td>' + nsCells(d.id, d.cloudflare_nameservers) + '</td>' +
+        '<td>' + registrarCell(d) + '</td>' +
         '<td>' + (d.stormwall_ip || '—') + '</td>' +
         '<td>' + (d.server_ip || '—') + '</td>' +
         '<td class="text-muted">' + d.created_at + '</td>' +

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Admin;
 
 use App\Models\Domain;
 use App\Services\Cloudflare\Contracts\CloudflareServiceInterface;
+use App\Services\StormWall\Contracts\StormWallServiceInterface;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Controller;
@@ -15,6 +16,9 @@ class SwitchTrafficController extends Controller
     // Modes where Cloudflare handles HTTP traffic (proxied)
     private const CF_MODES = ['cf', 'cf_only', 'sw_cf'];
 
+    // Modes that require a provisioned StormWall domain
+    private const SW_MODES = ['dns', 'sw_cf', 'sw_only'];
+
     // active_traffic_receiver value per mode
     private const RECEIVER_MAP = [
         'cf'      => 'cf',
@@ -25,7 +29,8 @@ class SwitchTrafficController extends Controller
     ];
 
     public function __construct(
-        private CloudflareServiceInterface $cf,
+        private CloudflareServiceInterface  $cf,
+        private StormWallServiceInterface   $sw,
     ) {}
 
     /**
@@ -127,25 +132,60 @@ class SwitchTrafficController extends Controller
 
     private function validateSwitchPreconditions(Domain $domain, string $targetMode): void
     {
-        // Switching to any SW-dependent mode requires an existing SW domain
-        if (in_array($targetMode, ['dns', 'sw_cf']) && ! $domain->stormwall_domain_id) {
+        // Any SW-dependent mode requires a provisioned SW domain
+        if (in_array($targetMode, self::SW_MODES) && ! $domain->stormwall_domain_id) {
             throw new \RuntimeException('StormWall не настроен для этого домена. Пересоздайте домен в нужном режиме.');
         }
 
-        // Switching to dns requires known SW proxy IP for CF DNS update
+        // dns mode requires known SW proxy IP for CF DNS update
         if ($targetMode === 'dns' && ! $domain->stormwall_ip) {
             throw new \RuntimeException('Отсутствует stormwall_ip. Невозможно обновить DNS Cloudflare.');
         }
 
-        // Switching to cf/cf_only/sw_cf requires CF zone to be set up
+        // sw_cf mode requires cf_proxy_ip to configure SW backends correctly
+        if ($targetMode === 'sw_cf' && ! $domain->cf_proxy_ip) {
+            throw new \RuntimeException('Отсутствует cf_proxy_ip. Невозможно настроить SW → CF режим.');
+        }
+
+        // CF-based modes require a provisioned CF zone
         if (in_array($targetMode, self::CF_MODES) && ! $domain->cloudflare_zone_id) {
             throw new \RuntimeException('Cloudflare зона не настроена для этого домена.');
         }
     }
 
-    // ─── CF DNS changes on switch ────────────────────────────────────────────
+    // ─── CF DNS + SW backend changes on switch ───────────────────────────────
 
     private function applyCfDnsSwitch(Domain $domain, string $targetMode): void
+    {
+        $this->applySwBackendSwitch($domain, $targetMode);
+        $this->applyCfDnsUpdate($domain, $targetMode);
+    }
+
+    /**
+     * Update StormWall backends when mode transitions require a different backend IP.
+     *
+     * dns / sw_only → server_ip is the SW backend
+     * sw_cf         → cf_proxy_ip is the SW backend (SW sends traffic to CF)
+     */
+    private function applySwBackendSwitch(Domain $domain, string $targetMode): void
+    {
+        if (! $domain->stormwall_domain_id) {
+            return; // No SW domain provisioned — nothing to update
+        }
+
+        $swId = (int) $domain->stormwall_domain_id;
+
+        if ($targetMode === 'sw_cf') {
+            // SW must route to CF proxy IP
+            $this->sw->replaceBackends($swId, $domain->cf_proxy_ip);
+        } elseif (in_array($targetMode, ['dns', 'sw_only']) && $domain->mode === 'sw_cf') {
+            // Coming FROM sw_cf: restore SW backends to server_ip
+            $this->sw->replaceBackends($swId, $domain->server_ip);
+        }
+        // All other transitions: SW backends stay as-is (either unused or already correct)
+    }
+
+    private function applyCfDnsUpdate(Domain $domain, string $targetMode): void
     {
         $zoneId = $domain->cloudflare_zone_id;
         $dnsId  = $domain->cloudflare_dns_id;
@@ -167,6 +207,23 @@ class SwitchTrafficController extends Controller
 
     private function applyCfDnsRevert(Domain $domain, string $previousMode, array $previousConfig): void
     {
+        // Restore SW backends if needed
+        if ($domain->stormwall_domain_id) {
+            $swId = (int) $domain->stormwall_domain_id;
+            if ($previousMode === 'sw_cf') {
+                $restoreCfProxyIp = $previousConfig['cf_proxy_ip'] ?? $domain->cf_proxy_ip;
+                if ($restoreCfProxyIp) {
+                    $this->sw->replaceBackends($swId, $restoreCfProxyIp);
+                }
+            } elseif (in_array($previousMode, ['dns', 'sw_only']) && $domain->mode === 'sw_cf') {
+                $restoreServerIp = $previousConfig['server_ip'] ?? $domain->server_ip;
+                if ($restoreServerIp) {
+                    $this->sw->replaceBackends($swId, $restoreServerIp);
+                }
+            }
+        }
+
+        // Restore CF DNS
         $zoneId = $domain->cloudflare_zone_id;
         $dnsId  = $previousConfig['cloudflare_dns_id'] ?? $domain->cloudflare_dns_id;
 
