@@ -37,6 +37,6 @@ class Setting extends Model
             return json_encode($v);
         }
 
-        return $v ?? $default;
+        return $v;
     }
 }

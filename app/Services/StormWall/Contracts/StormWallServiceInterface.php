@@ -47,6 +47,12 @@ interface StormWallServiceInterface
 
     public function isSslReady(int $domainId): bool;
 
+    /** Enable HTTP→HTTPS redirect. Call only after SSL certificate is active. */
+    public function setHttpsRedirect(int $domainId): void;
+
+    /** Returns array of NS hostnames from StormWall DNS (e.g. dns1.storm-pro.net). */
+    public function getNameservers(int $domainId): array;
+
     /**
      * @param  array<int, ProxiedPortData>  $domainPorts
      */

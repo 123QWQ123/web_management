@@ -20,9 +20,6 @@ enum DomainStatus: string
 
     case WAITING_STORMWALL_SSL = 'waiting_stormwall_ssl';
 
-    // sw_cf mode: SW backends configured with CF proxy IP as upstream
-    case SW_CF_BACKENDS = 'sw_cf_backends';
-
     // sw/cf_sw mode: SW backends configured with server_ip, no CF proxy in chain
     case SW_BACKENDS = 'sw_backends';
 

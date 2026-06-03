@@ -16,12 +16,12 @@ final readonly class BackendData
         public bool $isWs = false
     ) {}
 
-    public static function fromConfig(string $ip): self
+    public static function fromConfig(string $ip, ?int $domainPort = null, ?int $backendPort = null): self
     {
         return new self(
             ip: $ip,
-            backendPort: (int) config('services.stormwall.backend_port'),
-            domainPort: (int) config('services.stormwall.domain_port'),
+            backendPort: $backendPort ?? (int) config('services.stormwall.backend_port'),
+            domainPort: $domainPort ?? (int) config('services.stormwall.domain_port'),
             type: (string) config('services.stormwall.backend_type'),
             weight: (int) config('services.stormwall.backend_weight'),
             useSsl: (bool) config('services.stormwall.domain_uses_ssl'),

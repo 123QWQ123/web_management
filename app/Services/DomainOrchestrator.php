@@ -8,6 +8,7 @@ use App\Models\Domain;
 use App\Services\Cloudflare\Contracts\CloudflareServiceInterface;
 use App\Services\StormWall\Contracts\StormWallServiceInterface;
 use App\Services\StormWall\DTO\LetsEncryptSslData;
+use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -19,10 +20,10 @@ use Throwable;
  * then dispatches a new ProcessDomainJob for the next step (fan-forward pattern).
  *
  * Workflow steps per routing mode:
- *   cf:    INIT → CF_ZONE → CF_DNS → DONE
- *   sw:    INIT → SW_DOMAIN → SW_BACKENDS → [SSL_REQUEST → WAIT_SSL] → DONE
- *   cf_sw: INIT → CF_ZONE → SW_DOMAIN → CF_DNS → SW_BACKENDS → [SSL] → DONE
- *   sw_cf: INIT → CF_ZONE → CF_DNS → SW_DOMAIN → SW_CF_BACKENDS → DONE
+ *   cf:    INIT → CF_ZONE → CF_DNS (proxied) → DONE
+ *   sw:    INIT → SW_DOMAIN → SW_BACKENDS → SSL_REQUEST → WAIT_SSL → DONE
+ *   cf_sw: INIT → CF_ZONE → SW_DOMAIN → CF_DNS (DNS Only→SW IP) → SW_BACKENDS → SSL_REQUEST → WAIT_SSL → DONE
+ *          (NS at CF, CF resolves domain to SW IP, traffic goes directly to SW, SW terminates SSL)
  *
  * All external API calls are delegated to CloudflareService and StormWallService.
  * Every step is logged via DomainWorkflowLogger with full request/response context.
@@ -62,7 +63,6 @@ class DomainOrchestrator
                 DomainStatus::STORMWALL_DOMAIN        => $this->routeAfterSwDomain($domain),
                 DomainStatus::CLOUDFLARE_DNS          => $this->routeAfterDns($domain),
                 DomainStatus::STORMWALL_BACKENDS      => $this->addStormWallBackends($domain),
-                DomainStatus::SW_CF_BACKENDS          => $this->addSwCfBackends($domain),
                 DomainStatus::SW_BACKENDS             => $this->addSwBackends($domain),
                 DomainStatus::STORMWALL_SSL_REQUESTED => $this->requestStormWallSsl($domain),
                 DomainStatus::WAITING_STORMWALL_SSL   => $this->waitForStormWallSsl($domain),
@@ -119,7 +119,7 @@ class DomainOrchestrator
 
     // After CF zone:
     //   cf_sw → create SW domain first (need SW proxy IP for CF DNS)
-    //   others (cf, sw_cf) → go straight to CF DNS record
+    //   cf    → go straight to CF DNS record
     private function routeAfterZone(Domain $domain): void
     {
         if ($domain->mode === 'cf_sw') {
@@ -146,28 +146,37 @@ class DomainOrchestrator
             $updates['stormwall_ip'] = $swDomain->ip;
         }
 
+        // Fetch NS records so operator knows what to set at the registrar
+        try {
+            $ns = $this->sw->getNameservers($swDomain->id);
+            if (! empty($ns)) {
+                $updates['stormwall_nameservers'] = $ns;
+            }
+        } catch (\Throwable) {
+            // Non-critical: NS fetch failure doesn't break provisioning
+        }
+
         $domain->update($updates);
 
         $this->logger->success($domain, DomainStatus::CLOUDFLARE_ZONE->value . '|' . DomainStatus::INIT->value, [
             'domain' => $domain->domain,
             'mode'   => $domain->mode,
         ], [
-            'stormwall_domain_id' => $swDomain->id,
-            'stormwall_ip'        => $swDomain->ip,
+            'stormwall_domain_id'  => $swDomain->id,
+            'stormwall_ip'         => $swDomain->ip,
+            'stormwall_nameservers' => $updates['stormwall_nameservers'] ?? null,
         ]);
 
         $this->dispatchNextStep($domain);
     }
 
     // After SW domain is created, routing depends on mode:
-    //   cf_sw  → create CF DNS record (pointing to SW proxy IP, proxied=true)
-    //   sw_cf  → set SW_CF_BACKENDS, dispatch (SW backends use CF proxy IP)
-    //   sw     → set SW_BACKENDS, dispatch (SW backends use server_ip)
+    //   cf_sw → create CF DNS record (pointing to SW proxy IP, proxied=true)
+    //   sw    → set SW_BACKENDS, dispatch (SW backends use server_ip)
     private function routeAfterSwDomain(Domain $domain): void
     {
         match ($domain->mode) {
             'cf_sw'  => $this->createOrUpdateCloudflareDns($domain),
-            'sw_cf'  => $this->scheduleStep($domain, DomainStatus::SW_CF_BACKENDS, DomainStatus::STORMWALL_DOMAIN->value),
             'sw'     => $this->scheduleStep($domain, DomainStatus::SW_BACKENDS, DomainStatus::STORMWALL_DOMAIN->value),
             default  => null,
         };
@@ -192,18 +201,6 @@ class DomainOrchestrator
             'status'            => DomainStatus::CLOUDFLARE_DNS->value,
         ];
 
-        // For sw_cf mode we need the CF anycast proxy IP (what SW will use as backend).
-        // Resolve it now by querying CF's own nameservers — works before registrar NS change.
-        if ($domain->mode === 'sw_cf' && $proxied && ! $domain->cf_proxy_ip) {
-            $nameservers = $domain->cloudflare_nameservers ?? [];
-            if (! empty($nameservers)) {
-                $proxyIp = $this->cf->resolveProxiedIp($domain->domain, $nameservers);
-                if ($proxyIp) {
-                    $updates['cf_proxy_ip'] = $proxyIp;
-                }
-            }
-        }
-
         $domain->update($updates);
 
         $this->logger->success($domain, DomainStatus::STORMWALL_DOMAIN->value . '|' . DomainStatus::CLOUDFLARE_ZONE->value, [
@@ -215,29 +212,26 @@ class DomainOrchestrator
             'cloudflare_dns_id' => $record->id,
             'content'           => $record->content,
             'proxied'           => $record->proxied,
-            'cf_proxy_ip'       => $updates['cf_proxy_ip'] ?? null,
         ]);
 
         $this->dispatchNextStep($domain);
     }
 
     // After CF DNS, routing depends on mode:
-    //   cf      → DONE
-    //   cf_sw   → STORMWALL_BACKENDS (add SW backends with server_ip)
-    //   sw_cf   → create SW domain (SW backends will point to CF proxy IP)
+    //   cf    → DONE
+    //   cf_sw → STORMWALL_BACKENDS (add SW backends with server_ip)
     private function routeAfterDns(Domain $domain): void
     {
         match ($domain->mode) {
             'cf'    => $this->markDone($domain, DomainStatus::CLOUDFLARE_DNS->value),
             'cf_sw' => $this->scheduleStep($domain, DomainStatus::STORMWALL_BACKENDS, DomainStatus::CLOUDFLARE_DNS->value),
-            'sw_cf' => $this->createStormWallDomain($domain),
             default => $this->markDone($domain, DomainStatus::CLOUDFLARE_DNS->value),
         };
     }
 
     // ─── StormWall backends ──────────────────────────────────────────────────
 
-    // cf_sw mode: SW backends receive traffic from CF, route to server_ip
+    // cf_sw mode: CF is DNS Only (NS at CF, A→SW IP, not proxied). SW is the edge, needs SSL.
     private function addStormWallBackends(Domain $domain): void
     {
         $stormWallDomainId = (int) $this->requireValue((string) $domain->stormwall_domain_id, 'stormwall_domain_id');
@@ -245,43 +239,16 @@ class DomainOrchestrator
 
         $this->sw->addBackends($stormWallDomainId, $serverIp);
 
-        $nextStatus = $this->stormWallSslEnabled()
-            ? DomainStatus::STORMWALL_SSL_REQUESTED
-            : DomainStatus::DONE;
-
-        $domain->update(['status' => $nextStatus->value]);
+        $domain->update(['status' => DomainStatus::STORMWALL_SSL_REQUESTED->value]);
 
         $this->logger->success($domain, DomainStatus::STORMWALL_BACKENDS->value, [
             'stormwall_domain_id' => $stormWallDomainId,
             'server_ip'           => $serverIp,
         ], [
-            'next_status' => $nextStatus->value,
+            'next_status' => DomainStatus::STORMWALL_SSL_REQUESTED->value,
         ]);
 
-        if ($nextStatus === DomainStatus::STORMWALL_SSL_REQUESTED) {
-            $this->dispatchNextStep($domain, $this->nextStormWallSslAttemptAt());
-            return;
-        }
-
-        $this->dispatchNextStep($domain);
-    }
-
-    // sw_cf mode: SW is primary entry point, backend = CF proxy IP, CF proxies to server_ip
-    private function addSwCfBackends(Domain $domain): void
-    {
-        $stormWallDomainId = (int) $this->requireValue((string) $domain->stormwall_domain_id, 'stormwall_domain_id');
-        $cfProxyIp         = $this->requireValue($domain->cf_proxy_ip, 'cf_proxy_ip');
-
-        $this->sw->addBackends($stormWallDomainId, $cfProxyIp);
-
-        $domain->update(['status' => DomainStatus::DONE->value]);
-
-        $this->logger->success($domain, DomainStatus::SW_CF_BACKENDS->value, [
-            'stormwall_domain_id' => $stormWallDomainId,
-            'cf_proxy_ip'         => $cfProxyIp,
-        ], [
-            'next_status' => DomainStatus::DONE->value,
-        ]);
+        $this->dispatchNextStep($domain, $this->nextStormWallSslAttemptAt());
     }
 
     // sw mode: SW is the only service, backend = server_ip, no CF
@@ -292,14 +259,16 @@ class DomainOrchestrator
 
         $this->sw->addBackends($stormWallDomainId, $serverIp);
 
-        $domain->update(['status' => DomainStatus::DONE->value]);
+        $domain->update(['status' => DomainStatus::STORMWALL_SSL_REQUESTED->value]);
 
         $this->logger->success($domain, DomainStatus::SW_BACKENDS->value, [
             'stormwall_domain_id' => $stormWallDomainId,
             'server_ip'           => $serverIp,
         ], [
-            'next_status' => DomainStatus::DONE->value,
+            'next_status' => DomainStatus::STORMWALL_SSL_REQUESTED->value,
         ]);
+
+        $this->dispatchNextStep($domain, $this->nextStormWallSslAttemptAt());
     }
 
     // ─── StormWall SSL ───────────────────────────────────────────────────────
@@ -334,16 +303,29 @@ class DomainOrchestrator
         $stormWallDomainId = (int) $this->requireValue($domain->stormwall_domain_id, 'stormwall_domain_id');
 
         if ($this->sw->isSslReady($stormWallDomainId)) {
+            // SSL is active — enable HTTPS redirect before marking done
+            try {
+                $this->sw->setHttpsRedirect($stormWallDomainId);
+            } catch (\Throwable $e) {
+                // Non-critical: redirect config failure doesn't block domain activation
+                Log::channel('domain')->warning('Failed to set HTTPS redirect', [
+                    'domain'    => $domain->domain,
+                    'sw_domain' => $stormWallDomainId,
+                    'error'     => $e->getMessage(),
+                ]);
+            }
+
             $domain->update([
-                'status' => DomainStatus::DONE->value,
-                'ssl_ready_at' => now(),
+                'status'          => DomainStatus::DONE->value,
+                'ssl_ready_at'    => now(),
                 'next_attempt_at' => null,
             ]);
 
             $this->logger->success($domain, DomainStatus::WAITING_STORMWALL_SSL->value, [
                 'stormwall_domain_id' => $stormWallDomainId,
             ], [
-                'ssl_ready' => true,
+                'ssl_ready'   => true,
+                'https_redirect' => true,
                 'next_status' => DomainStatus::DONE->value,
             ]);
 
@@ -351,7 +333,22 @@ class DomainOrchestrator
         }
 
         if ($this->stormWallSslWaitExpired($domain)) {
-            throw new \RuntimeException('StormWall SSL certificate was not ready before the max wait window expired.');
+            // SSL is taking longer than expected — reschedule another check instead of failing.
+            // The operator can see ssl_requested_at in the UI and decide to act manually.
+            $nextAttemptAt = $this->nextStormWallSslAttemptAt();
+
+            $domain->update(['next_attempt_at' => $nextAttemptAt]);
+
+            $this->logger->success($domain, DomainStatus::WAITING_STORMWALL_SSL->value, [
+                'stormwall_domain_id' => $stormWallDomainId,
+            ], [
+                'ssl_ready'      => false,
+                'note'           => 'max_wait_expired_rescheduled',
+                'next_attempt_at' => $nextAttemptAt->toISOString(),
+            ]);
+
+            $this->dispatchNextStep($domain, $nextAttemptAt);
+            return;
         }
 
         $nextAttemptAt = $this->nextStormWallSslAttemptAt();
@@ -412,7 +409,7 @@ class DomainOrchestrator
      * Dispatch a job for the next workflow step, optionally with a delay.
      * Re-reads the domain status to avoid dispatching on a terminal state.
      */
-    private function dispatchNextStep(Domain $domain, ?Carbon $delayUntil = null): void
+    private function dispatchNextStep(Domain $domain, ?CarbonInterface $delayUntil = null): void
     {
         $domain->refresh();
         $status = DomainStatus::tryFrom((string) $domain->status);
@@ -427,8 +424,8 @@ class DomainOrchestrator
     }
 
     // CF DNS target IP depends on mode:
-    //   cf_sw       → SW proxy IP (CF proxies TO stormwall, then SW routes to server)
-    //   cf / sw_cf  → server_ip (CF proxies to backend directly)
+    //   cf_sw → SW proxy IP (CF proxies to StormWall, then SW routes to server)
+    //   cf    → server_ip (CF proxies to backend directly)
     private function cloudflareTargetIp(Domain $domain): string
     {
         if ($domain->mode === 'cf_sw') {
@@ -442,7 +439,10 @@ class DomainOrchestrator
     // Note: sw mode has no CF DNS, so this method won't be called for it.
     private function isCloudflareProxied(Domain $domain): bool
     {
-        return true;
+        // cf_sw: DNS Only (proxied=false) — CF just resolves domain to SW IP,
+        // traffic goes directly to SW. SW is the edge and handles SSL termination.
+        // cf: proxied=true — CF acts as proxy in front of the backend.
+        return $domain->mode !== 'cf_sw';
     }
 
     /**
@@ -454,12 +454,8 @@ class DomainOrchestrator
         return $value ?: throw new \InvalidArgumentException("Domain [{$field}] is required for this workflow step.");
     }
 
-    private function stormWallSslEnabled(): bool
-    {
-        return (bool) config('services.stormwall.ssl.lets_encrypt_enabled');
-    }
 
-    private function nextStormWallSslAttemptAt(): Carbon
+    private function nextStormWallSslAttemptAt(): CarbonInterface
     {
         return now()->addSeconds((int) config('services.stormwall.ssl.poll_delay_seconds'));
     }

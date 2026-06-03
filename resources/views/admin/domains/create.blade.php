@@ -37,7 +37,6 @@
                 <option value="cf"    {{ old('mode','cf') === 'cf'    ? 'selected' : '' }}>☁️ CF → Backend — Cloudflare принимает трафик → бэкенд</option>
                 <option value="sw"    {{ old('mode')       === 'sw'   ? 'selected' : '' }}>🛡️ SW → Backend — StormWall принимает трафик → бэкенд</option>
                 <option value="cf_sw" {{ old('mode')       === 'cf_sw'? 'selected' : '' }}>🔀 CF → SW → Backend — CF проксирует на StormWall → бэкенд</option>
-                <option value="sw_cf" {{ old('mode')       === 'sw_cf'? 'selected' : '' }}>⚡ SW → CF → Backend — StormWall → CF → бэкенд</option>
             </select>
             <div id="mode-hint" class="form-text mt-1"></div>
         </div>
@@ -59,27 +58,6 @@
             <small class="text-muted" id="server-ip-hint">Введите новый IP — он автоматически сохранится в списке.</small>
         </div>
 
-        {{-- cf_proxy_ip: only for sw_cf mode --}}
-        <div class="mb-3 d-none" id="cf-proxy-ip-group">
-            <label class="form-label">CF Proxy IP <span class="badge bg-secondary">sw_cf</span></label>
-            <input name="cf_proxy_ip"
-                   list="cf-proxy-ip-list"
-                   class="form-control @error('cf_proxy_ip') is-invalid @enderror"
-                   value="{{ old('cf_proxy_ip') }}"
-                   placeholder="Anycast IP Cloudflare (напр. 104.21.x.x)" />
-            <datalist id="cf-proxy-ip-list">
-                @foreach($cfProxyIps as $ip)
-                    <option value="{{ $ip }}">
-                @endforeach
-            </datalist>
-            @error('cf_proxy_ip')<div class="invalid-feedback">{{ $message }}</div>@enderror
-            <small class="text-muted">
-                IP, который Cloudflare возвращает клиентам для вашей зоны (anycast).
-                StormWall будет проксировать трафик на этот IP.
-                Узнать: сделайте DNS-запрос к домену, уже подключённому через CF Proxied.
-            </small>
-        </div>
-
         {{-- StormWall IP подтягивается автоматически из API StormWall --}}
 
         <button class="btn btn-primary">Создать и поставить в очередь</button>
@@ -90,35 +68,26 @@
 (function () {
     var modeSelect    = document.getElementById('mode-select');
     var modeHint      = document.getElementById('mode-hint');
-    var serverIpGroup = document.getElementById('server-ip-group');
     var serverIpLabel = document.getElementById('server-ip-label');
     var serverIpHint  = document.getElementById('server-ip-hint');
-    var cfProxyGroup  = document.getElementById('cf-proxy-ip-group');
 
     var HINTS = {
         cf:    '☁️ CF принимает трафик и проксирует его на ваш бэкенд-сервер. NS у регистратора → Cloudflare.',
         sw:    '🛡️ StormWall принимает трафик и проксирует напрямую на бэкенд. A-запись у регистратора → SW IP.',
         cf_sw: '🔀 CF принимает трафик (proxied=true), DNS-запись → StormWall proxy IP. SW проксирует на бэкенд. NS у регистратора → Cloudflare.',
-        sw_cf: '⚡ StormWall принимает трафик и проксирует в Cloudflare, CF отправляет на бэкенд. A-запись у регистратора → SW IP. Требуется CF Proxy IP.',
     };
 
     function update() {
         var mode = modeSelect.value;
         modeHint.textContent = HINTS[mode] || '';
 
-        var isSw   = (mode === 'sw_cf' || mode === 'sw');
-        var isSwCf = (mode === 'sw_cf');
+        var isSw = (mode === 'sw');
 
         // Server IP visibility and labels
         serverIpLabel.textContent = isSw ? 'IP бэкенд-сервера' : 'IP сервера (бэкенд)';
         serverIpHint.textContent  = mode === 'cf_sw'
             ? 'IP вашего бэкенд-сервера. StormWall Proxy IP будет получен автоматически через API.'
-            : mode === 'sw_cf'
-            ? 'IP вашего бэкенд-сервера. CF проксирует трафик на этот адрес.'
             : 'Введите новый IP — он автоматически сохранится в списке.';
-
-        // CF Proxy IP field: only needed for sw_cf
-        cfProxyGroup.classList.toggle('d-none', !isSwCf);
     }
 
     modeSelect.addEventListener('change', update);

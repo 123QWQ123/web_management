@@ -37,7 +37,8 @@ class StormWallService implements StormWallServiceInterface
         }
 
         if ($domain->server_ip) {
-            $this->addBackend($stormWallDomain->id, BackendData::fromConfig($domain->server_ip));
+            $this->addBackend($stormWallDomain->id, BackendData::fromConfig($domain->server_ip, 80, 80));
+            $this->addBackend($stormWallDomain->id, BackendData::fromConfig($domain->server_ip, 443, 80));
         }
 
         return $stormWallDomain;
@@ -80,12 +81,13 @@ class StormWallService implements StormWallServiceInterface
     }
 
     /**
-     * Add a single backend server for the given SW domain using shared config defaults.
-     * Wraps the low-level addBackend with a BackendData DTO built from config.
+     * Add backend servers for the given SW domain.
+     * Registers two backends: port 80 (HTTP) and port 443 (HTTPS).
      */
     public function addBackends(int $domainId, string $serverIp): void
     {
-        $this->addBackend($domainId, BackendData::fromConfig($serverIp));
+        $this->addBackend($domainId, BackendData::fromConfig($serverIp, 80, 80));
+        $this->addBackend($domainId, BackendData::fromConfig($serverIp, 443, 80));
     }
 
     /**
@@ -111,7 +113,7 @@ class StormWallService implements StormWallServiceInterface
 
     /**
      * Atomically replace all existing backends with a single new backend pointing to $newIp.
-     * Used when switching routing modes (e.g. sw_cf: replace server_ip backend with cf_proxy_ip).
+     * Used when switching routing modes (e.g. cf_sw: replace backend with server_ip).
      * Deletion errors are silently swallowed — the new backend is always added regardless.
      */
     public function replaceBackends(int $domainId, string $newIp): void
@@ -129,7 +131,8 @@ class StormWallService implements StormWallServiceInterface
             }
         }
 
-        $this->addBackend($domainId, BackendData::fromConfig($newIp));
+        $this->addBackend($domainId, BackendData::fromConfig($newIp, 80, 80));
+        $this->addBackend($domainId, BackendData::fromConfig($newIp, 443, 80));
     }
 
     /**
@@ -261,10 +264,40 @@ class StormWallService implements StormWallServiceInterface
         ]);
     }
 
+    /**
+     * Enable HTTP→HTTPS redirect for a domain.
+     * Must be called only after SSL certificate is active.
+     */
+    public function setHttpsRedirect(int $domainId): void
+    {
+        $this->client->request('post', "/v3/domains/{$domainId}/redirects", [
+            'useRedirectToHttps'  => 1,
+            'wwwRedirectMode'     => 0,
+            'useExternalRedirect' => 0,
+            'externalRedirectUrl' => '',
+        ]);
+    }
+
     /** Returns the StormWall service ID from config (required by most API endpoints). */
     private function serviceId(): int
     {
         return (int) config('services.stormwall.service_id');
+    }
+
+    /**
+     * Returns the NS hostnames assigned to this domain by StormWall (e.g. dns1.storm-pro.net).
+     * These should be set at the registrar when SW manages DNS for this domain.
+     */
+    public function getNameservers(int $domainId): array
+    {
+        $response = $this->client->request('get', "/v3/domains/{$domainId}/dns");
+        $records  = data_get($response, 'payload', []);
+
+        return collect($records)
+            ->where('type', 'NS')
+            ->pluck('record')
+            ->values()
+            ->all();
     }
 }
 

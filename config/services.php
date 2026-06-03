@@ -61,12 +61,11 @@ return [
 
         'backend_type' => env('STORMWALL_BACKEND_TYPE', 'balance'),
 
-        'backend_weight' => (int) env('STORMWALL_BACKEND_WEIGHT', 1),
+        'backend_weight' => (int) env('STORMWALL_BACKEND_WEIGHT', 50),
 
         'use_proxy_sni' => filter_var(env('STORMWALL_USE_PROXY_SNI', false), FILTER_VALIDATE_BOOL),
 
         'ssl' => [
-            'lets_encrypt_enabled' => filter_var(env('STORMWALL_SSL_LE_ENABLED', false), FILTER_VALIDATE_BOOL),
             'www_included' => filter_var(env('STORMWALL_SSL_LE_WWW_INCLUDED', true), FILTER_VALIDATE_BOOL),
             'poll_delay_seconds' => (int) env('STORMWALL_SSL_POLL_DELAY_SECONDS', 300),
             'max_wait_minutes' => (int) env('STORMWALL_SSL_MAX_WAIT_MINUTES', 30),

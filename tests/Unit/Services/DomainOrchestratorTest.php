@@ -11,7 +11,6 @@ use App\Services\Cloudflare\DTO\ZoneData;
 use App\Services\DomainOrchestrator;
 use App\Services\StormWall\Contracts\StormWallServiceInterface;
 use App\Services\StormWall\DTO\LetsEncryptSslData;
-use App\Services\StormWall\DTO\StormWallDomainData;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Queue;
@@ -38,6 +37,9 @@ class DomainOrchestratorTest extends TestCase
             ->once()
             ->with('example.com')
             ->andReturn(new ZoneData('zone-1', 'example.com', 'pending'));
+        $cloudflare->shouldReceive('applyZoneSettings')
+            ->once()
+            ->with('zone-1');
 
         $this->app->instance(CloudflareServiceInterface::class, $cloudflare);
 
@@ -94,7 +96,7 @@ class DomainOrchestratorTest extends TestCase
         $domain = Domain::create([
             'domain' => 'example.com',
             'mode' => 'cf_sw',
-            'status' => DomainStatus::CLOUDFLARE_ZONE->value,
+            'status' => DomainStatus::STORMWALL_DOMAIN->value,  // after SW domain created
             'cloudflare_zone_id' => 'zone-1',
             'server_ip' => '203.0.113.10',
             'stormwall_ip' => '198.51.100.20',
@@ -120,7 +122,7 @@ class DomainOrchestratorTest extends TestCase
         $this->assertSame('dns-1', $domain->cloudflare_dns_id);
     }
 
-    public function test_it_moves_from_cloudflare_dns_to_stormwall_setup_for_fallback_route(): void
+    public function test_it_moves_from_cloudflare_dns_to_stormwall_backends_for_cf_sw_route(): void
     {
         Queue::fake();
 
@@ -132,55 +134,27 @@ class DomainOrchestratorTest extends TestCase
 
         app(DomainOrchestrator::class)->handle($domain);
 
-        $this->assertSame(DomainStatus::STORMWALL_SETUP->value, $domain->refresh()->status);
+        $this->assertSame(DomainStatus::STORMWALL_BACKENDS->value, $domain->refresh()->status);
 
         Queue::assertPushed(ProcessDomainJob::class, fn (ProcessDomainJob $job) => $job->domainId === $domain->id);
     }
 
-    public function test_it_finishes_after_stormwall_setup(): void
+    public function test_it_requests_ssl_after_stormwall_backends_are_added(): void
     {
         Queue::fake();
 
         $domain = Domain::create([
             'domain' => 'example.com',
             'mode' => 'cf_sw',
-            'status' => DomainStatus::STORMWALL_SETUP->value,
+            'status' => DomainStatus::STORMWALL_BACKENDS->value,
             'server_ip' => '203.0.113.10',
-            'stormwall_ip' => '198.51.100.20',
+            'stormwall_domain_id' => '456',
         ]);
 
         $stormWall = Mockery::mock(StormWallServiceInterface::class);
-        $stormWall->shouldReceive('setup')
+        $stormWall->shouldReceive('addBackends')
             ->once()
-            ->with(Mockery::on(fn (Domain $givenDomain) => $givenDomain->is($domain)))
-            ->andReturn(new StormWallDomainData(456, 'example.com'));
-
-        $this->app->instance(StormWallServiceInterface::class, $stormWall);
-
-        app(DomainOrchestrator::class)->handle($domain);
-
-        $this->assertSame(DomainStatus::DONE->value, $domain->refresh()->status);
-        Queue::assertNotPushed(ProcessDomainJob::class);
-    }
-
-    public function test_it_moves_to_ssl_request_step_after_stormwall_setup_when_ssl_is_enabled(): void
-    {
-        Queue::fake();
-
-        config(['services.stormwall.ssl.lets_encrypt_enabled' => true]);
-
-        $domain = Domain::create([
-            'domain' => 'example.com',
-            'mode' => 'cf_sw',
-            'status' => DomainStatus::STORMWALL_SETUP->value,
-            'server_ip' => '203.0.113.10',
-            'stormwall_ip' => '198.51.100.20',
-        ]);
-
-        $stormWall = Mockery::mock(StormWallServiceInterface::class);
-        $stormWall->shouldReceive('setup')
-            ->once()
-            ->andReturn(new StormWallDomainData(456, 'example.com'));
+            ->with(456, '203.0.113.10');
 
         $this->app->instance(StormWallServiceInterface::class, $stormWall);
 
@@ -189,7 +163,6 @@ class DomainOrchestratorTest extends TestCase
         $domain->refresh();
 
         $this->assertSame(DomainStatus::STORMWALL_SSL_REQUESTED->value, $domain->status);
-        $this->assertSame('456', $domain->stormwall_domain_id);
 
         Queue::assertPushed(ProcessDomainJob::class, fn (ProcessDomainJob $job) => $job->domainId === $domain->id);
     }
@@ -250,6 +223,9 @@ class DomainOrchestratorTest extends TestCase
             ->once()
             ->with(456)
             ->andReturn(true);
+        $stormWall->shouldReceive('setHttpsRedirect')
+            ->once()
+            ->with(456);
 
         $this->app->instance(StormWallServiceInterface::class, $stormWall);
 
@@ -299,11 +275,14 @@ class DomainOrchestratorTest extends TestCase
         Queue::assertPushed(ProcessDomainJob::class, fn (ProcessDomainJob $job) => $job->domainId === $domain->id && $job->delay !== null);
     }
 
-    public function test_it_fails_when_stormwall_ssl_wait_expires(): void
+    public function test_it_reschedules_when_stormwall_ssl_wait_expires(): void
     {
         Queue::fake();
 
-        config(['services.stormwall.ssl.max_wait_minutes' => 20]);
+        config([
+            'services.stormwall.ssl.max_wait_minutes' => 20,
+            'services.stormwall.ssl.poll_delay_seconds' => 300,
+        ]);
 
         $domain = Domain::create([
             'domain' => 'example.com',
@@ -325,10 +304,11 @@ class DomainOrchestratorTest extends TestCase
 
         $domain->refresh();
 
-        $this->assertSame(DomainStatus::FAILED->value, $domain->status);
-        $this->assertSame(1, $domain->retries);
-        $this->assertTrue($domain->logs()->where('step', DomainStatus::WAITING_STORMWALL_SSL->value)->where('success', false)->exists());
-        Queue::assertNotPushed(ProcessDomainJob::class);
+        // NS propagation can take up to 24h — job reschedules instead of failing
+        $this->assertSame(DomainStatus::WAITING_STORMWALL_SSL->value, $domain->status);
+        $this->assertNotNull($domain->next_attempt_at);
+
+        Queue::assertPushed(ProcessDomainJob::class, fn (ProcessDomainJob $job) => $job->domainId === $domain->id && $job->delay !== null);
     }
 
     public function test_it_marks_domain_as_failed_and_logs_exception(): void

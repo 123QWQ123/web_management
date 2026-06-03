@@ -23,7 +23,8 @@ class DomainController extends Controller
     public function index()
     {
         $domains    = Domain::latest()->get();
-        $cfProxyIps = Setting::where('key', 'cloudflare_proxy_ips')->first()?->value ?? [];
+        $cfProxySetting = Setting::where('key', 'cloudflare_proxy_ips')->first();
+        $cfProxyIps     = $cfProxySetting ? $cfProxySetting->value : [];
         return view('admin.domains.index', compact('domains', 'cfProxyIps'));
     }
 
@@ -35,13 +36,15 @@ class DomainController extends Controller
                 'domain'                  => $d->domain,
                 'mode'                    => $d->mode,
                 'previous_mode'           => $d->previous_mode,
-                'pending_mode'            => $d->pending_mode,
                 'active_traffic_receiver' => $d->active_traffic_receiver,
                 'status'                  => $d->status,
+                'cloudflare_zone_id'      => $d->cloudflare_zone_id,
                 'cloudflare_nameservers'  => $d->cloudflare_nameservers ?? [],
+                'stormwall_nameservers'   => $d->stormwall_nameservers ?? [],
                 'stormwall_ip'            => $d->stormwall_ip,
-                'cf_proxy_ip'             => $d->cf_proxy_ip,
                 'server_ip'               => $d->server_ip,
+                'ssl_requested_at'        => $d->ssl_requested_at?->toIso8601String(),
+                'ssl_ready_at'            => $d->ssl_ready_at?->toIso8601String(),
                 'created_at'              => $d->created_at->format('d.m.Y H:i'),
             ])
         );
@@ -49,8 +52,10 @@ class DomainController extends Controller
 
     public function create()
     {
-        $serverIps  = Setting::where('key', 'server_ips')->first()?->value ?? [];
-        $cfProxyIps = Setting::where('key', 'cloudflare_proxy_ips')->first()?->value ?? [];
+        $serverSetting  = Setting::where('key', 'server_ips')->first();
+        $cfProxySetting = Setting::where('key', 'cloudflare_proxy_ips')->first();
+        $serverIps      = $serverSetting  ? $serverSetting->value  : [];
+        $cfProxyIps     = $cfProxySetting ? $cfProxySetting->value : [];
 
         return view('admin.domains.create', compact('serverIps', 'cfProxyIps'));
     }
@@ -59,12 +64,10 @@ class DomainController extends Controller
     {
         $data = $request->validated();
 
-        $this->rememberIp('server_ips',           $data['server_ip']    ?? null);
-        $this->rememberIp('stormwall_ips',         $data['stormwall_ip'] ?? null);
-        $this->rememberIp('cloudflare_proxy_ips',  $data['cf_proxy_ip']  ?? null);
+        $this->rememberIp('server_ips',   $data['server_ip'] ?? null);
 
         // Set active_traffic_receiver based on mode
-        $data['active_traffic_receiver'] = in_array($data['mode'], ['sw', 'sw_cf']) ? 'sw' : 'cf';
+        $data['active_traffic_receiver'] = $data['mode'] === 'sw' ? 'sw' : 'cf';
 
         $domain = Domain::create($data);
 
@@ -106,6 +109,39 @@ class DomainController extends Controller
         $domain->delete();
 
         return redirect()->route('admin.domains.index')->with('status', "Domain [{$domain->domain}] deleted from all services.");
+    }
+
+    /**
+     * Reset a failed/stuck domain and re-dispatch its workflow job.
+     * For SSL-waiting statuses, resets to stormwall_ssl_requested.
+     * For other failed statuses, resets to the current status so the step re-runs.
+     */
+    public function retry(Domain $domain): RedirectResponse
+    {
+        $sslStatuses = ['stormwall_ssl_requested', 'waiting_stormwall_ssl', 'failed'];
+
+        $newStatus = match (true) {
+            in_array($domain->status, $sslStatuses) && $domain->ssl_requested_at && ! $domain->ssl_ready_at
+                => 'stormwall_ssl_requested',
+            default
+                => $domain->status === 'failed' ? 'init' : $domain->status,
+        };
+
+        $domain->update([
+            'status'         => $newStatus,
+            'retries'        => 0,
+            'next_attempt_at' => null,
+        ]);
+
+        ProcessDomainJob::dispatch($domain->id)->delay(now()->addSeconds(5));
+
+        Log::channel('domain')->info('Domain workflow manually retried', [
+            'domain'     => $domain->domain,
+            'new_status' => $newStatus,
+        ]);
+
+        return redirect()->route('admin.domains.index')
+            ->with('status', "Домен [{$domain->domain}]: воркфлоу перезапущен (статус: {$newStatus}).");
     }
 
     private function rememberIp(string $key, ?string $ip): void

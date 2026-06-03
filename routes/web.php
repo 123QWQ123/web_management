@@ -30,4 +30,6 @@ Route::prefix('admin')->name('admin.')->group(function () {
 
     Route::post('domains/{domain}/switch-traffic', [App\Http\Controllers\Admin\SwitchTrafficController::class, 'switchTraffic'])->name('domains.switch-traffic');
     Route::post('domains/{domain}/revert-traffic', [App\Http\Controllers\Admin\SwitchTrafficController::class, 'revertTraffic'])->name('domains.revert-traffic');
+    Route::post('domains/{domain}/sync-cf-dns', [App\Http\Controllers\Admin\SwitchTrafficController::class, 'syncCfDns'])->name('domains.sync-cf-dns');
+    Route::post('domains/{domain}/retry', [App\Http\Controllers\Admin\DomainController::class, 'retry'])->name('domains.retry');
 });

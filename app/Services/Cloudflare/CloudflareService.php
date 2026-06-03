@@ -132,8 +132,13 @@ class CloudflareService implements CloudflareServiceInterface
 
     /**
      * Resolve the CF anycast proxy IP by querying CF's own nameservers directly.
-     * This works immediately after a zone + proxied DNS record is created —
-     * no registrar NS change is needed.
+     *
+     * This works ONLY when the CF zone is ACTIVE (registrar NS have been updated).
+     * For a pending zone, CF's NS returns the origin IP — not a CF anycast IP —
+     * because CF does not proxy traffic for inactive zones. The isCloudflareIp()
+     * check will reject the origin IP and this method returns null.
+     *
+     * @param  string[]  $nameservers  CF zone nameservers (e.g. ['vera.ns.cloudflare.com'])
      */
     public function resolveProxiedIp(string $domain, array $nameservers): ?string
     {

@@ -2,12 +2,12 @@
 
 @section('content')
 <style>
+/*noinspection CssUnusedSymbol*/
 .tooltip-wide .tooltip-inner {
     max-width: 480px;
     text-align: left;
     white-space: nowrap;
 }
-.badge-mode-sw_cf   { background: #6f42c1; color: #fff; }
 .badge-mode-sw_only { background: #343a40; color: #fff; }
 </style>
 <div class="container-fluid px-4">
@@ -75,15 +75,11 @@
             <tr data-id="{{ $domain->id }}"
                 data-server-ip="{{ $domain->server_ip }}"
                 data-stormwall-ip="{{ $domain->stormwall_ip }}"
-                data-cf-proxy-ip="{{ $domain->cf_proxy_ip }}">
+                data-ssl-requested-at="{{ $domain->ssl_requested_at?->toIso8601String() }}"
+                data-ssl-ready-at="{{ $domain->ssl_ready_at?->toIso8601String() }}">
                 <td><strong>{{ $domain->domain }}</strong></td>
                 <td>
                     {!! modeBadgePhp($domain->mode) !!}
-                    @if($domain->pending_mode)
-                        <br><span class="badge bg-warning text-dark mt-1" style="font-size:.7rem;">
-                            ⏳ ожидает активации NS → {{ $domain->pending_mode }}
-                        </span>
-                    @endif
                 </td>
                 <td>
                     @php
@@ -95,91 +91,109 @@
                         };
                     @endphp
                     <span class="badge bg-{{ $c }}">{{ $domain->status }}</span>
+                    @if($domain->ssl_requested_at && !$domain->ssl_ready_at)
+                        <br><small class="text-muted" title="{{ $domain->ssl_requested_at->format('d.m.Y H:i:s') }}">
+                            🔐 SSL запитано {{ $domain->ssl_requested_at->diffForHumans() }}
+                        </small>
+                    @elseif($domain->ssl_ready_at)
+                        <br><small class="text-success" title="{{ $domain->ssl_ready_at->format('d.m.Y H:i:s') }}">
+                            ✅ SSL видано {{ $domain->ssl_ready_at->diffForHumans() }}
+                        </small>
+                    @endif
                 </td>
                 <td>
                     @php
-                        $ns  = $domain->cloudflare_nameservers ?? [];
-                        $swIp = $domain->stormwall_ip;
+                        $cfNs  = $domain->cloudflare_nameservers ?? [];
+                        $swNs  = $domain->stormwall_nameservers  ?? [];
+                        $swIp  = $domain->stormwall_ip;
 
-                        // Which modes need CF NS at registrar? Only modes where CF is the primary receiver.
-                        // sw_cf uses SW as primary receiver → registrar needs A-record → SW IP (not CF NS).
-                        $cfModes = ['cf', 'cf_sw'];
+                        // Only pure CF mode needs CF NS at registrar.
+                        // sw/cf_sw: delegate NS to StormWall (dns1-4.storm-pro.net)
+                        $cfModes = ['cf'];
+                        $swModes = ['sw', 'cf_sw'];
                         $needsCfNs   = in_array($domain->mode, $cfModes);
-                        $needsSwA    = in_array($domain->mode, ['sw', 'sw_cf']);
+                        $needsSwNs   = in_array($domain->mode, $swModes);
 
                         // What did the registrar need BEFORE a switch?
                         $prevNeedsCfNs = $domain->previous_mode && in_array($domain->previous_mode, $cfModes);
-                        $prevNeedsSwA  = $domain->previous_mode && in_array($domain->previous_mode, ['sw', 'sw_cf']);
+                        $prevNeedsSwNs = $domain->previous_mode && in_array($domain->previous_mode, $swModes);
 
                         // Do registrar settings need to change after the switch?
                         $registrarChanged = $domain->previous_mode && (
-                            ($needsCfNs  && $prevNeedsSwA)  ||  // sw_only → CF mode
-                            ($needsSwA   && $prevNeedsCfNs)     // CF mode → sw_only
+                            ($needsCfNs  && $prevNeedsSwNs)  ||  // sw/cf_sw → cf
+                            ($needsSwNs  && $prevNeedsCfNs)      // cf → sw/cf_sw
                         );
                     @endphp
 
                     {{-- Current registrar config --}}
                     @if($needsCfNs)
-                        @forelse($ns as $i => $server)
+                        @forelse($cfNs as $i => $server)
                             <div class="d-flex align-items-center gap-1 mb-1">
-                                <code class="flex-grow-1" id="ns-{{ $domain->id }}-{{ $i }}">{{ $server }}</code>
+                                <code class="flex-grow-1" id="ns-{{ $domain->id }}-cf-{{ $i }}">{{ $server }}</code>
                                 <button type="button"
                                         class="btn btn-sm btn-outline-secondary py-0 px-1"
-                                        onclick="copyNs('ns-{{ $domain->id }}-{{ $i }}', this)">&#128203;</button>
+                                        onclick="copyNs('ns-{{ $domain->id }}-cf-{{ $i }}', this)">&#128203;</button>
                             </div>
                         @empty
                             <span class="text-muted small">NS ещё не получены</span>
                         @endforelse
-                        @if(!empty($ns))
+                        @if(!empty($cfNs))
                             <div class="mt-1">
                                 <span class="badge bg-info text-dark">
                                     ☁️ Прописать NS Cloudflare у регистратора
                                 </span>
                             </div>
                         @endif
-                    @elseif($needsSwA)
-                        @if($swIp)
-                            <div class="d-flex align-items-center gap-1 mb-1">
-                                <code class="flex-grow-1" id="ns-{{ $domain->id }}-sw">{{ $swIp }}</code>
-                                <button type="button"
-                                        class="btn btn-sm btn-outline-secondary py-0 px-1"
-                                        onclick="copyNs('ns-{{ $domain->id }}-sw', this)">&#128203;</button>
-                            </div>
+                    @elseif($needsSwNs)
+                        @if(!empty($swNs))
+                            @foreach($swNs as $i => $server)
+                                <div class="d-flex align-items-center gap-1 mb-1">
+                                    <code class="flex-grow-1" id="ns-{{ $domain->id }}-sw-{{ $i }}">{{ $server }}</code>
+                                    <button type="button"
+                                            class="btn btn-sm btn-outline-secondary py-0 px-1"
+                                            onclick="copyNs('ns-{{ $domain->id }}-sw-{{ $i }}', this)">&#128203;</button>
+                                </div>
+                            @endforeach
                             <div class="mt-1">
                                 <span class="badge bg-secondary">
-                                    🛡️ A-запись → SW IP у регистратора
+                                    🛡️ Прописать NS StormWall у регистратора
                                 </span>
                             </div>
+                        @elseif($swIp)
+                            <div class="d-flex align-items-center gap-1 mb-1">
+                                <code class="flex-grow-1" id="ns-{{ $domain->id }}-swip">{{ $swIp }}</code>
+                                <button type="button"
+                                        class="btn btn-sm btn-outline-secondary py-0 px-1"
+                                        onclick="copyNs('ns-{{ $domain->id }}-swip', this)">&#128203;</button>
+                            </div>
+                            <div class="mt-1">
+                                <span class="badge bg-warning text-dark">⏳ NS StormWall ещё загружаются</span>
+                            </div>
                         @else
-                            <span class="text-muted small">SW IP ещё не получен</span>
+                            <span class="text-muted small">SW NS ещё не получены</span>
                         @endif
                     @else
                         <span class="text-muted">—</span>
-                    @endif
-
-                    {{-- Pending CF activation notice --}}
-                    @if($domain->pending_mode === 'sw_cf')
-                        <div class="mt-1 p-1 border border-warning rounded small">
-                            <span class="text-warning fw-bold">⏳ Ожидаем активации CF зоны:</span><br>
-                            Прописать NS Cloudflare у регистратора и дождаться активации.<br>
-                            Переключение в <strong>SW → CF → Backend</strong> произойдёт <em>автоматически</em>.
-                        </div>
                     @endif
 
                     {{-- After-switch warning: registrar config needs to change --}}
                     @if($registrarChanged)
                         <div class="mt-1 p-1 border border-warning rounded small">
                             <span class="text-warning fw-bold">⚠️ Нужно изменить у регистратора:</span><br>
-                            @if($needsCfNs && $prevNeedsSwA)
-                                Удалить A-запись → заменить на NS Cloudflare ☁️
-                                @if(!empty($ns))
-                                    @foreach($ns as $s)
+                            @if($needsCfNs && $prevNeedsSwNs)
+                                Удалить NS StormWall → заменить на NS Cloudflare ☁️
+                                @if(!empty($cfNs))
+                                    @foreach($cfNs as $s)
                                         <br><code class="small">{{ $s }}</code>
                                     @endforeach
                                 @endif
-                            @elseif($needsSwA && $prevNeedsCfNs)
-                                Удалить NS Cloudflare → прописать A-запись 🛡️<br>
-                                @if($swIp)<code class="small">{{ $swIp }}</code>@endif
+                            @elseif($needsSwNs && $prevNeedsCfNs)
+                                Удалить NS Cloudflare → прописать NS StormWall 🛡️
+                                @if(!empty($swNs))
+                                    @foreach($swNs as $s)
+                                        <br><code class="small">{{ $s }}</code>
+                                    @endforeach
+                                @endif
                             @endif
                         </div>
                     @elseif($domain->previous_mode && !$registrarChanged)
@@ -207,21 +221,11 @@
                                 <ul class="dropdown-menu">
                                     @foreach($switchTargets as $tMode => $tLabel)
                                     <li>
-                                        @if($tMode === 'sw_cf')
-                                        {{-- sw_cf needs cf_proxy_ip — open modal instead of direct submit --}}
-                                        <button type="button"
-                                                class="btn btn-sm btn-link p-0 text-decoration-none px-3 py-1 w-100 text-start"
-                                                onclick="openSwCfModal(
-                                                    '{{ route('admin.domains.switch-traffic', $domain) }}',
-                                                    '{{ addslashes($domain->cf_proxy_ip ?? '') }}'
-                                                )">{{ $tLabel }}</button>
-                                        @else
                                         <form action="{{ route('admin.domains.switch-traffic', $domain) }}" method="POST" class="px-3 py-1">
                                             @csrf
                                             <input type="hidden" name="mode" value="{{ $tMode }}">
                                             <button type="submit" class="btn btn-sm btn-link p-0 text-decoration-none">{{ $tLabel }}</button>
                                         </form>
-                                        @endif
                                     </li>
                                     @endforeach
                                 </ul>
@@ -257,7 +261,6 @@ function modeBadgePhp(string $mode): string {
         'cf'    => '<span class="badge bg-warning text-dark">☁️ CF → Backend</span>',
         'sw'    => '<span class="badge badge-mode-sw_only">🛡️ SW → Backend</span>',
         'cf_sw' => '<span class="badge bg-info text-dark">🔀 CF → SW</span>',
-        'sw_cf' => '<span class="badge badge-mode-sw_cf">⚡ SW → CF</span>',
         default => '<span class="badge bg-secondary">' . e($mode) . '</span>',
     };
 }
@@ -267,7 +270,6 @@ function switchTargets(string $mode): array {
         'cf'    => '☁️ CF → Backend',
         'sw'    => '🛡️ SW → Backend',
         'cf_sw' => '🔀 CF → SW → Backend',
-        'sw_cf' => '⚡ SW → CF → Backend',
     ];
     unset($all[$mode]);
     return $all;
@@ -281,42 +283,53 @@ var CSRF        = (document.querySelector('meta[name="csrf-token"]') || {}).cont
 
 var STATUS_COLORS = { done: 'success', failed: 'danger', init: 'secondary' };
 
-function statusBadge(status) {
+function statusBadge(status, sslRequestedAt, sslReadyAt) {
     var color = STATUS_COLORS[status] || 'primary';
-    return '<span class="badge bg-' + color + '">' + status + '</span>';
-}
-
-function modeBadge(mode, pendingMode) {
-    var badges = {
-        cf:    '<span class="badge bg-warning text-dark">☁️ CF → Backend</span>',
-        sw:    '<span class="badge badge-mode-sw_only">🛡️ SW → Backend</span>',
-        cf_sw: '<span class="badge bg-info text-dark">🔀 CF → SW</span>',
-        sw_cf: '<span class="badge badge-mode-sw_cf">⚡ SW → CF</span>',
-    };
-    var html = badges[mode] || '<span class="badge bg-secondary">' + mode + '</span>';
-    if (pendingMode) {
-        html += '<br><span class="badge bg-warning text-dark mt-1" style="font-size:.7rem;">⏳ NS → ' + pendingMode + '</span>';
+    var html = '<span class="badge bg-' + color + '">' + status + '</span>';
+    if (sslReadyAt) {
+        html += '<br><small class="text-success">✅ SSL видано</small>';
+    } else if (sslRequestedAt) {
+        var ago = sslAgo(sslRequestedAt);
+        html += '<br><small class="text-muted" title="' + sslRequestedAt + '">🔐 SSL ' + ago + '</small>';
     }
     return html;
 }
 
-// Modes where CF is the primary traffic receiver → registrar needs CF NS.
-// sw_cf uses SW as primary receiver, so it needs A-record → SW IP (not CF NS).
-var CF_NS_MODES = { cf: 1, cf_sw: 1 };
-var SW_A_MODES  = { sw: 1, sw_cf: 1 };
+function sslAgo(isoStr) {
+    if (!isoStr) return '';
+    var diff = Math.floor((Date.now() - new Date(isoStr).getTime()) / 1000);
+    if (diff < 60)  return diff + ' сек назад';
+    if (diff < 3600) return Math.floor(diff/60) + ' мин назад';
+    return Math.floor(diff/3600) + ' ч назад';
+}
+
+function modeBadge(mode) {
+    var badges = {
+        cf:    '<span class="badge bg-warning text-dark">☁️ CF → Backend</span>',
+        sw:    '<span class="badge badge-mode-sw_only">🛡️ SW → Backend</span>',
+        cf_sw: '<span class="badge bg-info text-dark">🔀 CF → SW</span>',
+    };
+    return badges[mode] || '<span class="badge bg-secondary">' + mode + '</span>';
+}
+
+// Only pure CF mode needs CF NS at registrar.
+// cf_sw: CF zone prepared (DNS Only) but NS are NOT at registrar — A-record → SW IP.
+var CF_NS_MODES = { cf: 1 };
+var SW_A_MODES  = { sw: 1, cf_sw: 1 };
 
 function registrarCell(d) {
     var html      = '';
     var needsCfNs = !!CF_NS_MODES[d.mode];
-    var needsSwA  = !!SW_A_MODES[d.mode];
-    var ns        = d.cloudflare_nameservers || [];
+    var needsSwNs = !!SW_A_MODES[d.mode];
+    var cfNs      = d.cloudflare_nameservers || [];
+    var swNs      = d.stormwall_nameservers  || [];
     var swIp      = d.stormwall_ip || '';
 
     // Current config
     if (needsCfNs) {
-        if (ns.length) {
-            ns.forEach(function(server, i) {
-                var id = 'ns-' + d.id + '-' + i;
+        if (cfNs.length) {
+            cfNs.forEach(function(server, i) {
+                var id = 'ns-' + d.id + '-cf-' + i;
                 html += '<div class="d-flex align-items-center gap-1 mb-1">' +
                     '<code class="flex-grow-1" id="' + id + '">' + server + '</code>' +
                     '<button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1"' +
@@ -326,16 +339,26 @@ function registrarCell(d) {
         } else {
             html += '<span class="text-muted small">NS ещё не получены</span>';
         }
-    } else if (needsSwA) {
-        if (swIp) {
-            var swId = 'ns-' + d.id + '-sw';
+    } else if (needsSwNs) {
+        if (swNs.length) {
+            swNs.forEach(function(server, i) {
+                var id = 'ns-' + d.id + '-sw-' + i;
+                html += '<div class="d-flex align-items-center gap-1 mb-1">' +
+                    '<code class="flex-grow-1" id="' + id + '">' + server + '</code>' +
+                    '<button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1"' +
+                    ' onclick="copyNs(\'' + id + '\', this)">&#128203;</button></div>';
+            });
+            html += '<div class="mt-1"><span class="badge bg-secondary">🛡️ Прописать NS StormWall у регистратора</span></div>';
+        } else if (swIp) {
+            // Fallback: SW IP as A-record if NS not yet fetched
+            var swId = 'ns-' + d.id + '-swip';
             html += '<div class="d-flex align-items-center gap-1 mb-1">' +
                 '<code class="flex-grow-1" id="' + swId + '">' + swIp + '</code>' +
                 '<button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1"' +
                 ' onclick="copyNs(\'' + swId + '\', this)">&#128203;</button></div>' +
-                '<div class="mt-1"><span class="badge bg-secondary">🛡️ A-запись → SW IP у регистратора</span></div>';
+                '<div class="mt-1"><span class="badge bg-warning text-dark">⏳ NS StormWall ещё загружаются</span></div>';
         } else {
-            html += '<span class="text-muted small">SW IP ещё не получен</span>';
+            html += '<span class="text-muted small">SW NS ещё не получены</span>';
         }
     } else {
         html += '<span class="text-muted">—</span>';
@@ -344,31 +367,22 @@ function registrarCell(d) {
     // After-switch warning
     if (d.previous_mode) {
         var prevCfNs = !!CF_NS_MODES[d.previous_mode];
-        var prevSwA  = !!SW_A_MODES[d.previous_mode];
-        if (needsCfNs && prevSwA) {
+        var prevSwNs = !!SW_A_MODES[d.previous_mode];
+        if (needsCfNs && prevSwNs) {
             html += '<div class="mt-1 p-1 border border-warning rounded small">' +
                 '<span class="text-warning fw-bold">⚠️ Нужно изменить у регистратора:</span><br>' +
-                'Удалить A-запись → заменить на NS Cloudflare ☁️' +
-                (ns.length ? '<br>' + ns.map(function(s) { return '<code class="small">' + s + '</code>'; }).join('<br>') : '') +
+                'Удалить NS StormWall → заменить на NS Cloudflare ☁️' +
+                (cfNs.length ? '<br>' + cfNs.map(function(s) { return '<code class="small">' + s + '</code>'; }).join('<br>') : '') +
                 '</div>';
-        } else if (needsSwA && prevCfNs) {
+        } else if (needsSwNs && prevCfNs) {
             html += '<div class="mt-1 p-1 border border-warning rounded small">' +
                 '<span class="text-warning fw-bold">⚠️ Нужно изменить у регистратора:</span><br>' +
-                'Удалить NS Cloudflare → прописать A-запись 🛡️' +
-                (swIp ? '<br><code class="small">' + swIp + '</code>' : '') +
+                'Удалить NS Cloudflare → прописать NS StormWall 🛡️' +
+                (swNs.length ? '<br>' + swNs.map(function(s) { return '<code class="small">' + s + '</code>'; }).join('<br>') : '') +
                 '</div>';
         } else {
             html += '<div class="mt-1"><span class="badge bg-success small">✓ NS не меняются</span></div>';
         }
-    }
-
-    // Pending CF activation notice
-    if (d.pending_mode === 'sw_cf') {
-        html += '<div class="mt-1 p-1 border border-warning rounded small">' +
-            '<span class="text-warning fw-bold">⏳ Ожидаем активации CF зоны:</span><br>' +
-            'Прописать NS Cloudflare у регистратора и дождаться активации.<br>' +
-            'Переключение в <strong>SW → CF → Backend</strong> произойдёт <em>автоматически</em>.' +
-            '</div>';
     }
 
     return html;
@@ -380,11 +394,6 @@ function buildRow(d) {
         var targets = switchTargetsJs(d.mode);
         if (targets.length) {
             var opts = targets.map(function(t) {
-                if (t.mode === 'sw_cf') {
-                    return '<li><button type="button" class="btn btn-sm btn-link p-0 text-decoration-none px-3 py-1 w-100 text-start"' +
-                        ' onclick="openSwCfModal(\'' + DELETE_BASE + '/' + d.id + '/switch-traffic\', \'' + (d.cf_proxy_ip || '') + '\')">' +
-                        t.label + '</button></li>';
-                }
                 return '<li><form action="' + DELETE_BASE + '/' + d.id + '/switch-traffic" method="POST" class="px-3 py-1">' +
                     '<input type="hidden" name="_token" value="' + CSRF + '">' +
                     '<input type="hidden" name="mode" value="' + t.mode + '">' +
@@ -407,14 +416,26 @@ function buildRow(d) {
         '<input type="hidden" name="_method" value="DELETE">' +
         '<button type="submit" class="btn btn-sm btn-danger w-100">Удалить</button>' +
         '</form>';
+    if (d.cloudflare_zone_id && (d.mode === 'cf' || d.mode === 'cf_sw')) {
+        actions += '<form action="' + DELETE_BASE + '/' + d.id + '/sync-cf-dns" method="POST">' +
+            '<input type="hidden" name="_token" value="' + CSRF + '">' +
+            '<button type="submit" class="btn btn-sm btn-outline-secondary w-100" onclick="return confirm(\'Пересинхронизировать CF DNS запись?\')">☁️ Sync CF DNS</button>' +
+            '</form>';
+    }
+    var retryStatuses = { failed: 1, stormwall_ssl_requested: 1, waiting_stormwall_ssl: 1 };
+    if (retryStatuses[d.status]) {
+        actions += '<form action="' + DELETE_BASE + '/' + d.id + '/retry" method="POST">' +
+            '<input type="hidden" name="_token" value="' + CSRF + '">' +
+            '<button type="submit" class="btn btn-sm btn-outline-info w-100">🔄 Перезапустить</button>' +
+            '</form>';
+    }
 
     return '<tr data-id="' + d.id + '"' +
         ' data-server-ip="' + (d.server_ip || '') + '"' +
-        ' data-stormwall-ip="' + (d.stormwall_ip || '') + '"' +
-        ' data-cf-proxy-ip="' + (d.cf_proxy_ip || '') + '">' +
+        ' data-stormwall-ip="' + (d.stormwall_ip || '') + '">' +
         '<td><strong>' + d.domain + '</strong></td>' +
-        '<td>' + modeBadge(d.mode, d.pending_mode) + '</td>' +
-        '<td>' + statusBadge(d.status) + '</td>' +
+        '<td>' + modeBadge(d.mode) + '</td>' +
+        '<td>' + statusBadge(d.status, d.ssl_requested_at, d.ssl_ready_at) + '</td>' +
         '<td>' + registrarCell(d) + '</td>' +
         '<td>' + (d.stormwall_ip || '—') + '</td>' +
         '<td>' + (d.server_ip || '—') + '</td>' +
@@ -427,7 +448,6 @@ function switchTargetsJs(mode) {
         { mode: 'cf',    label: '☁️ CF → Backend' },
         { mode: 'sw',    label: '🛡️ SW → Backend' },
         { mode: 'cf_sw', label: '🔀 CF → SW → Backend' },
-        { mode: 'sw_cf', label: '⚡ SW → CF → Backend' },
     ];
     return all.filter(function(t) { return t.mode !== mode; });
 }
@@ -463,13 +483,12 @@ function refresh() {
             domains.forEach(function(d, idx) {
                 var existing = tbody.querySelector('tr[data-id="' + d.id + '"]');
                 if (existing) {
-                    existing.cells[1].innerHTML = modeBadge(d.mode, d.pending_mode);
-                    existing.cells[2].innerHTML = statusBadge(d.status);
+                    existing.cells[1].innerHTML = modeBadge(d.mode);
+                    existing.cells[2].innerHTML = statusBadge(d.status, d.ssl_requested_at, d.ssl_ready_at);
                     existing.cells[3].innerHTML = registrarCell(d);
                     existing.cells[4].textContent = d.stormwall_ip || '—';
                     existing.dataset.serverIp    = d.server_ip    || '';
                     existing.dataset.stormwallIp = d.stormwall_ip || '';
-                    existing.dataset.cfProxyIp   = d.cf_proxy_ip  || '';
                 } else {
                     var tmp = document.createElement('tbody');
                     tmp.innerHTML = buildRow(d);
@@ -502,7 +521,6 @@ function filterByIp(query) {
         var ips = [
             row.dataset.serverIp,
             row.dataset.stormwallIp,
-            row.dataset.cfProxyIp,
         ].join(' ').toLowerCase();
 
         var match = !q || ips.includes(q);
@@ -553,77 +571,6 @@ function copyNs(id, btn) {
         }, 1500);
     });
 }
-
-// ─── SW→CF modal ───────────────────────────────────────────────────────────
-// Use getOrCreateInstance to avoid duplicate Bootstrap Modal instances when
-// the modal is reopened after being closed. Also defer show() by one tick so
-// the Bootstrap dropdown finishes its hide animation before the modal opens —
-// opening a modal synchronously from a dropdown click can cause a backdrop
-// conflict in Bootstrap 5.
-function openSwCfModal(action, currentCfProxyIp) {
-    document.getElementById('swCfForm').action = action;
-    var input = document.getElementById('swCfProxyIpInput');
-    var hint  = document.getElementById('swCfProxyIpHint');
-    input.value = currentCfProxyIp || '';
-    if (currentCfProxyIp) {
-        hint.innerHTML = '✅ IP определён автоматически при настройке. Можно изменить.';
-        hint.className = 'form-text text-success';
-        input.required = false;
-    } else {
-        hint.innerHTML = 'Будет определён автоматически через DNS запрос к CF nameservers. Или введите вручную.';
-        hint.className = 'form-text';
-        input.required = false;
-    }
-    // Defer modal open to allow Bootstrap dropdown to complete its close animation first.
-    setTimeout(function() {
-        bootstrap.Modal.getOrCreateInstance(document.getElementById('swCfModal')).show();
-        setTimeout(function() { input.focus(); }, 300);
-    }, 50);
-}
 </script>
 
-{{-- Modal: SW→CF mode requires CF proxy IP --}}
-<div class="modal fade" id="swCfModal" tabindex="-1" aria-labelledby="swCfModalLabel" aria-hidden="true">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="swCfModalLabel">⚡ Переключить в режим SW → CF</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-            </div>
-            <form id="swCfForm" method="POST">
-                @csrf
-                <input type="hidden" name="mode" value="sw_cf">
-                <div class="modal-body">
-                    <p class="text-muted small mb-3">
-                        В этом режиме StormWall принимает трафик и передаёт его на Cloudflare proxy IP.
-                        CF в свою очередь проксирует запросы на бэкенд.
-                    </p>
-                    <div class="mb-3">
-                        <label for="swCfProxyIpInput" class="form-label fw-bold">
-                            CF Proxy IP
-                        </label>
-                        <input type="text"
-                               class="form-control"
-                               id="swCfProxyIpInput"
-                               name="cf_proxy_ip"
-                               placeholder="оставьте пустым — определится автоматически"
-                               list="cfProxyIpsList">
-                        <datalist id="cfProxyIpsList">
-                            @foreach($cfProxyIps as $ip)
-                                <option value="{{ $ip }}">
-                            @endforeach
-                        </datalist>
-                        <div id="swCfProxyIpHint" class="form-text">
-                            Будет определён автоматически через DNS запрос к CF nameservers. Или введите вручную.
-                        </div>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Отмена</button>
-                    <button type="submit" class="btn btn-primary">Переключить</button>
-                </div>
-            </form>
-        </div>
-    </div>
-</div>
 @endsection
