@@ -39,6 +39,7 @@ class DomainController extends Controller
                 'active_traffic_receiver' => $d->active_traffic_receiver,
                 'status'                  => $d->status,
                 'cloudflare_zone_id'      => $d->cloudflare_zone_id,
+                'cloudflare_zone_status'  => $d->cloudflare_zone_status,
                 'cloudflare_nameservers'  => $d->cloudflare_nameservers ?? [],
                 'stormwall_nameservers'   => $d->stormwall_nameservers ?? [],
                 'stormwall_ip'            => $d->stormwall_ip,
@@ -142,6 +143,36 @@ class DomainController extends Controller
 
         return redirect()->route('admin.domains.index')
             ->with('status', "Домен [{$domain->domain}]: воркфлоу перезапущен (статус: {$newStatus}).");
+    }
+
+    /**
+     * Refresh Cloudflare zone status to check if NS are active at registrar.
+     */
+    public function refreshCfZoneStatus(Domain $domain): RedirectResponse
+    {
+        if (! $domain->cloudflare_zone_id) {
+            return redirect()->back()->with('error', "У домена [{$domain->domain}] нет CF зоны.");
+        }
+
+        try {
+            $status = $this->cf->getZoneStatus($domain->cloudflare_zone_id);
+            $domain->update(['cloudflare_zone_status' => $status]);
+
+            Log::channel('domain')->info('CF zone status refreshed', [
+                'domain'                 => $domain->domain,
+                'cloudflare_zone_id'     => $domain->cloudflare_zone_id,
+                'cloudflare_zone_status' => $status,
+            ]);
+
+            $statusLabel = $status === 'active' 
+                ? '✅ active (NS работают)' 
+                : "⏳ {$status}";
+
+            return redirect()->route('admin.domains.index')
+                ->with('status', "Домен [{$domain->domain}]: статус CF зоны обновлён → {$statusLabel}");
+        } catch (Throwable $e) {
+            return redirect()->back()->with('error', "Ошибка обновления статуса CF зоны: {$e->getMessage()}");
+        }
     }
 
     private function rememberIp(string $key, ?string $ip): void

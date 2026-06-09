@@ -9,55 +9,103 @@
     white-space: nowrap;
 }
 .badge-mode-sw_only { background: #343a40; color: #fff; }
+
+/* Loading overlay for table row */
+tr.row-loading {
+    position: relative;
+    pointer-events: none;
+}
+tr.row-loading td {
+    filter: blur(2px);
+    opacity: 0.6;
+}
+tr.row-loading::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 24px;
+    height: 24px;
+    border: 3px solid #0d6efd;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    z-index: 10;
+}
+@keyframes spin {
+    to { transform: translate(-50%, -50%) rotate(360deg); }
+}
 </style>
-<div class="container-fluid px-4">
-    <div class="d-flex justify-content-between align-items-center mb-3">
-        <h1 class="mb-0">Домены</h1>
-        <div class="d-flex align-items-center gap-3">
-            {{-- Live indicator with status legend tooltip --}}
-            <span class="text-muted small" style="cursor:default"
-                  data-bs-toggle="tooltip"
-                  data-bs-placement="bottom"
-                  data-bs-html="true"
-                  title="<b>Автообновление каждые 4 сек.</b><br><br>
-                         <b>Статусы домена:</b><br>
-                         <span class='badge bg-secondary'>init</span> — добавлен, ещё не обработан<br>
-                         <span class='badge bg-primary'>cloudflare_zone&nbsp;/&nbsp;stormwall_domain&nbsp;/&nbsp;...</span> — идёт обработка<br>
-                         <span class='badge bg-success'>done</span> — всё настроено успешно<br>
-                         <span class='badge bg-danger'>failed</span> — ошибка на одном из шагов<br><br>
-                         <b>Индикатор:</b><br>
-                         &#9679; <span style='color:#198754'>зелёный</span> — соединение активно<br>
-                         &#9679; <span style='color:#ffc107'>жёлтый</span> — ошибка запроса к API">
-                <span id="live-indicator">
-                    <span id="live-dot" class="text-success">&#9679;</span>
-                    Прямой эфир &mdash; <span id="live-clock" style="transition:opacity 0.25s; display:inline-block; width:6ch; text-align:right">—</span>
-                </span>
-            </span>
+
+<div class="page-header d-flex justify-content-between align-items-start">
+    <div>
+        <h1>Управление доменами</h1>
+        <p>Cloudflare + StormWall маршрутизация</p>
+    </div>
+    <div class="d-flex align-items-center gap-3">
+        {{-- Live indicator with status legend tooltip --}}
+        <span class="text-muted small d-flex align-items-center gap-2" style="cursor:default"
+              data-bs-toggle="tooltip"
+              data-bs-placement="bottom"
+              data-bs-html="true"
+              title="<b>Автообновление каждые 4 сек.</b><br><br>
+                     <b>Статусы домена:</b><br>
+                     <span class='badge bg-secondary'>init</span> — добавлен, ещё не обработан<br>
+                     <span class='badge bg-primary'>cloudflare_zone&nbsp;/&nbsp;stormwall_domain&nbsp;/&nbsp;...</span> — идёт обработка<br>
+                     <span class='badge bg-success'>done</span> — всё настроено успешно<br>
+                     <span class='badge bg-danger'>failed</span> — ошибка на одном из шагов<br><br>
+                     <b>Индикатор:</b><br>
+                     &#9679; <span style='color:#198754'>зелёный</span> — соединение активно<br>
+                     &#9679; <span style='color:#ffc107'>жёлтый</span> — ошибка запроса к API">
+            <span id="live-dot" class="text-success">&#9679;</span>
+            <span id="live-clock" style="font-weight:500">—</span>
+        </span>
+        <a href="{{ route('admin.domains.create') }}" class="btn btn-primary">
+            <span style="font-size:1.1rem">+</span> Добавить домен
+        </a>
+    </div>
+</div>
+
+@if(session('status'))
+    <div class="alert alert-success alert-dismissible fade show">
+        {{ session('status') }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+@endif
+@if(session('error'))
+    <div class="alert alert-danger alert-dismissible fade show">
+        {{ session('error') }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+@endif
+
+{{-- IP filter --}}
+<div class="card mb-3">
+    <div class="card-body py-3">
+        <div class="d-flex align-items-center gap-2">
+            <input id="ip-filter" type="text" class="form-control" style="max-width:280px; border-radius:8px"
+                   placeholder="🔍 Фильтр по IP (backend / SW / CF)..."
+                   oninput="filterByIp(this.value)">
+            <span id="ip-filter-count" class="text-muted small"></span>
+        </div>
+    </div>
+</div>
+
+<div id="domains-empty" class="{{ $domains->isEmpty() ? '' : 'd-none' }}">
+    <div class="card">
+        <div class="card-body text-center py-5">
+            <div style="font-size:3rem; opacity:0.3; margin-bottom:1rem">📋</div>
+            <h5 class="text-muted">Доменов пока нет</h5>
+            <p class="text-muted small mb-3">Создайте первый домен для начала работы</p>
             <a href="{{ route('admin.domains.create') }}" class="btn btn-primary">+ Добавить домен</a>
         </div>
     </div>
+</div>
 
-    @if(session('status'))
-        <div class="alert alert-success alert-dismissible fade show py-2">{{ session('status') }}<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>
-    @endif
-    @if(session('error'))
-        <div class="alert alert-danger alert-dismissible fade show py-2">{{ session('error') }}<button type="button" class="btn-close" data-bs-dismiss="alert"></button></div>
-    @endif
-
-    {{-- IP filter --}}
-    <div class="d-flex align-items-center gap-2 mb-2">
-        <input id="ip-filter" type="text" class="form-control form-control-sm" style="max-width:220px"
-               placeholder="🔍 Фильтр по IP (backend / SW / CF)..."
-               oninput="filterByIp(this.value)">
-        <span id="ip-filter-count" class="text-muted small"></span>
-    </div>
-
-    <div id="domains-empty" class="{{ $domains->isEmpty() ? '' : 'd-none' }}">
-        <div class="alert alert-secondary">Доменов пока нет.</div>
-    </div>
-
-    <table class="table table-bordered table-hover align-middle small {{ $domains->isEmpty() ? 'd-none' : '' }}" id="domains-table">
-        <thead class="table-dark">
+<div class="card {{ $domains->isEmpty() ? 'd-none' : '' }}" id="domains-table-wrapper">
+    <table class="table align-middle mb-0" id="domains-table">
+        <thead>
             <tr>
                 <th>Домен</th>
                 <th>Режим</th>
@@ -89,15 +137,30 @@
                             'init'   => 'secondary',
                             default  => 'primary',
                         };
+                        $statusLabels = [
+                            'init'                    => 'Добавлен, ожидает обработки',
+                            'cloudflare_zone'         => 'Создание зоны CF...',
+                            'stormwall_domain'        => 'Регистрация домена в SW...',
+                            'cloudflare_dns'          => 'Настройка DNS CF...',
+                            'stormwall_backends'      => 'Добавление бэкендов SW...',
+                            'stormwall_ssl_requested' => 'SSL-сертификат запрошен, ожидаем...',
+                            'waiting_stormwall_ssl'   => 'Ожидаем активации SSL...',
+                            'sw_backends'             => 'Настройка бэкендов SW...',
+                            'done'                    => 'Настроен успешно',
+                            'failed'                  => 'Ошибка на одном из шагов',
+                        ];
                     @endphp
                     <span class="badge bg-{{ $c }}">{{ $domain->status }}</span>
+                    @if(isset($statusLabels[$domain->status]))
+                        <br><small class="text-muted">{{ $statusLabels[$domain->status] }}</small>
+                    @endif
                     @if($domain->ssl_requested_at && !$domain->ssl_ready_at)
                         <br><small class="text-muted" title="{{ $domain->ssl_requested_at->format('d.m.Y H:i:s') }}">
-                            🔐 SSL запитано {{ $domain->ssl_requested_at->diffForHumans() }}
+                            🔐 SSL запрошен {{ $domain->ssl_requested_at->diffForHumans() }}
                         </small>
                     @elseif($domain->ssl_ready_at)
                         <br><small class="text-success" title="{{ $domain->ssl_ready_at->format('d.m.Y H:i:s') }}">
-                            ✅ SSL видано {{ $domain->ssl_ready_at->diffForHumans() }}
+                            ✅ SSL выдан {{ $domain->ssl_ready_at->diffForHumans() }}
                         </small>
                     @endif
                 </td>
@@ -107,10 +170,10 @@
                         $swNs  = $domain->stormwall_nameservers  ?? [];
                         $swIp  = $domain->stormwall_ip;
 
-                        // Only pure CF mode needs CF NS at registrar.
-                        // sw/cf_sw: delegate NS to StormWall (dns1-4.storm-pro.net)
-                        $cfModes = ['cf'];
-                        $swModes = ['sw', 'cf_sw'];
+                        // cf and cf_sw both use Cloudflare NS at registrar.
+                        // sw: delegates NS to StormWall (dns1-4.storm-pro.net)
+                        $cfModes = ['cf', 'cf_sw'];
+                        $swModes = ['sw'];
                         $needsCfNs   = in_array($domain->mode, $cfModes);
                         $needsSwNs   = in_array($domain->mode, $swModes);
 
@@ -127,6 +190,19 @@
 
                     {{-- Current registrar config --}}
                     @if($needsCfNs)
+                        {{-- CF zone status indicator --}}
+                        @if($domain->cloudflare_zone_id)
+                            @if($domain->cloudflare_zone_status === 'active')
+                                <div class="mb-2">
+                                    <span class="badge bg-success small">✅ NS активны</span>
+                                </div>
+                            @elseif($domain->cloudflare_zone_status === 'pending')
+                                <div class="mb-2">
+                                    <span class="badge bg-warning text-dark small">⏳ NS ожидают активации</span>
+                                </div>
+                            @endif
+                        @endif
+
                         @forelse($cfNs as $i => $server)
                             <div class="d-flex align-items-center gap-1 mb-1">
                                 <code class="flex-grow-1" id="ns-{{ $domain->id }}-cf-{{ $i }}">{{ $server }}</code>
@@ -247,12 +323,19 @@
                             @method('DELETE')
                             <button type="submit" class="btn btn-sm btn-danger w-100">Удалить</button>
                         </form>
+                        @if($domain->cloudflare_zone_id && in_array($domain->mode, ['cf', 'cf_sw']))
+                        <form action="{{ route('admin.domains.refresh-cf-status', $domain) }}" method="POST">
+                            @csrf
+                            <button type="submit" class="btn btn-sm btn-outline-info w-100">🔄 Обновить статус CF</button>
+                        </form>
+                        @endif
                     </div>
                 </td>
             </tr>
             @endforeach
         </tbody>
     </table>
+</div>
 </div>
 
 @php
@@ -282,12 +365,27 @@ var DELETE_BASE = '{{ url('admin/domains') }}';
 var CSRF        = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
 
 var STATUS_COLORS = { done: 'success', failed: 'danger', init: 'secondary' };
+var STATUS_LABELS = {
+    'init':                    'Добавлен, ожидает обработки',
+    'cloudflare_zone':         'Создание зоны CF...',
+    'stormwall_domain':        'Регистрация домена в SW...',
+    'cloudflare_dns':          'Настройка DNS CF...',
+    'stormwall_backends':      'Добавление бэкендов SW...',
+    'stormwall_ssl_requested': 'SSL-сертификат запрошен, ожидаем...',
+    'waiting_stormwall_ssl':   'Ожидаем активации SSL...',
+    'sw_backends':             'Настройка бэкендов SW...',
+    'done':                    'Настроен успешно',
+    'failed':                  'Ошибка на одном из шагов',
+};
 
 function statusBadge(status, sslRequestedAt, sslReadyAt) {
     var color = STATUS_COLORS[status] || 'primary';
     var html = '<span class="badge bg-' + color + '">' + status + '</span>';
+    if (STATUS_LABELS[status]) {
+        html += '<br><small class="text-muted">' + STATUS_LABELS[status] + '</small>';
+    }
     if (sslReadyAt) {
-        html += '<br><small class="text-success">✅ SSL видано</small>';
+        html += '<br><small class="text-success">✅ SSL выдан</small>';
     } else if (sslRequestedAt) {
         var ago = sslAgo(sslRequestedAt);
         html += '<br><small class="text-muted" title="' + sslRequestedAt + '">🔐 SSL ' + ago + '</small>';
@@ -312,10 +410,10 @@ function modeBadge(mode) {
     return badges[mode] || '<span class="badge bg-secondary">' + mode + '</span>';
 }
 
-// Only pure CF mode needs CF NS at registrar.
-// cf_sw: CF zone prepared (DNS Only) but NS are NOT at registrar — A-record → SW IP.
-var CF_NS_MODES = { cf: 1 };
-var SW_A_MODES  = { sw: 1, cf_sw: 1 };
+// cf and cf_sw both use Cloudflare NS at registrar.
+// sw: delegates NS to StormWall (dns1-4.storm-pro.net)
+var CF_NS_MODES = { cf: 1, cf_sw: 1 };
+var SW_A_MODES  = { sw: 1 };
 
 function registrarCell(d) {
     var html      = '';
@@ -327,6 +425,15 @@ function registrarCell(d) {
 
     // Current config
     if (needsCfNs) {
+        // CF zone status indicator
+        if (d.cloudflare_zone_id) {
+            if (d.cloudflare_zone_status === 'active') {
+                html += '<div class="mb-2"><span class="badge bg-success small">✅ NS активны</span></div>';
+            } else if (d.cloudflare_zone_status === 'pending') {
+                html += '<div class="mb-2"><span class="badge bg-warning text-dark small">⏳ NS ожидают активации</span></div>';
+            }
+        }
+
         if (cfNs.length) {
             cfNs.forEach(function(server, i) {
                 var id = 'ns-' + d.id + '-cf-' + i;
@@ -420,6 +527,10 @@ function buildRow(d) {
         actions += '<form action="' + DELETE_BASE + '/' + d.id + '/sync-cf-dns" method="POST">' +
             '<input type="hidden" name="_token" value="' + CSRF + '">' +
             '<button type="submit" class="btn btn-sm btn-outline-secondary w-100" onclick="return confirm(\'Пересинхронизировать CF DNS запись?\')">☁️ Sync CF DNS</button>' +
+            '</form>';
+        actions += '<form action="' + DELETE_BASE + '/' + d.id + '/refresh-cf-status" method="POST">' +
+            '<input type="hidden" name="_token" value="' + CSRF + '">' +
+            '<button type="submit" class="btn btn-sm btn-outline-info w-100">🔄 Обновить статус CF</button>' +
             '</form>';
     }
     var retryStatuses = { failed: 1, stormwall_ssl_requested: 1, waiting_stormwall_ssl: 1 };
@@ -571,6 +682,20 @@ function copyNs(id, btn) {
         }, 1500);
     });
 }
+
+// Add loading overlay to table row when switching mode
+document.addEventListener('submit', function(e) {
+    var form = e.target;
+    var action = form.getAttribute('action');
+    
+    // Check if it's a switch/revert traffic form
+    if (action && (action.includes('switch-traffic') || action.includes('revert-traffic'))) {
+        var row = form.closest('tr[data-id]');
+        if (row) {
+            row.classList.add('row-loading');
+        }
+    }
+});
 </script>
 
 @endsection

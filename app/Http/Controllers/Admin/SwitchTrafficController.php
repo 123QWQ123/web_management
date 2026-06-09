@@ -169,10 +169,13 @@ class SwitchTrafficController extends Controller
 
         if ($existingZoneId) {
             $domain->cloudflare_zone_id = $existingZoneId;
+            // Refresh zone status when reusing existing zone
+            $domain->cloudflare_zone_status = $this->cf->getZoneStatus($existingZoneId);
         } else {
             $zone = $this->cf->createZone($domain->domain);
             $this->cf->applyZoneSettings($zone->id);
             $domain->cloudflare_zone_id      = $zone->id;
+            $domain->cloudflare_zone_status  = $zone->status;
             $domain->cloudflare_nameservers  = $zone->nameservers ?: null;
         }
 
@@ -198,10 +201,11 @@ class SwitchTrafficController extends Controller
             : $this->cf->createDnsRecord($domain->cloudflare_zone_id, $domain->domain, $ip, $proxied);
 
         Log::channel('domain')->info('CF zone provisioned on-the-fly during switch', [
-            'domain'             => $domain->domain,
-            'cloudflare_zone_id' => $domain->cloudflare_zone_id,
-            'cloudflare_dns_id'  => $domain->cloudflare_dns_id,
-            'target_mode'        => $targetMode,
+            'domain'                 => $domain->domain,
+            'cloudflare_zone_id'     => $domain->cloudflare_zone_id,
+            'cloudflare_zone_status' => $domain->cloudflare_zone_status,
+            'cloudflare_dns_id'      => $domain->cloudflare_dns_id,
+            'target_mode'            => $targetMode,
         ]);
     }
 

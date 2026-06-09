@@ -28,6 +28,7 @@ class Domain extends Model
         'active_traffic_receiver', // Which service is the primary entry point: cf | sw
         'status',           // Workflow step (see DomainStatus enum)
         'cloudflare_zone_id',
+        'cloudflare_zone_status',  // CF zone status: active | pending | initializing | moved | deleted | deactivated
         'cloudflare_nameservers',  // NS servers to set at registrar when CF is primary
         'cloudflare_dns_id',
         'stormwall_domain_id',

@@ -88,6 +88,10 @@ class DomainOrchestrator
     {
         if ($domain->mode === 'sw') {
             $this->createStormWallDomain($domain);
+        } elseif ($domain->cloudflare_zone_id) {
+            // Zone was already created in a previous attempt — advance status and continue
+            $domain->update(['status' => DomainStatus::CLOUDFLARE_ZONE->value]);
+            $this->dispatchNextStep($domain);
         } else {
             $this->createCloudflareZone($domain);
         }
@@ -101,6 +105,7 @@ class DomainOrchestrator
 
         $domain->update([
             'cloudflare_zone_id'       => $zone->id,
+            'cloudflare_zone_status'   => $zone->status,
             'cloudflare_nameservers'   => $zone->nameservers ?: null,
             'status'                   => DomainStatus::CLOUDFLARE_ZONE->value,
         ]);
@@ -110,8 +115,8 @@ class DomainOrchestrator
         $this->logger->success($domain, DomainStatus::INIT->value, [
             'domain' => $domain->domain,
         ], [
-            'cloudflare_zone_id' => $zone->id,
-            'status'             => $zone->status,
+            'cloudflare_zone_id'     => $zone->id,
+            'cloudflare_zone_status' => $zone->status,
         ]);
 
         $this->dispatchNextStep($domain);
@@ -190,11 +195,20 @@ class DomainOrchestrator
         $targetIp = $this->cloudflareTargetIp($domain);
         $proxied  = $this->isCloudflareProxied($domain);
 
+        // Create or update root domain record (e.g., fleenking.pro)
         $existing = $this->cf->findDnsRecord($zoneId, $domain->domain);
 
         $record = $existing
             ? $this->cf->updateDnsRecord($zoneId, $existing->id, $targetIp, $proxied)
             : $this->cf->createDnsRecord($zoneId, $domain->domain, $targetIp, $proxied);
+
+        // Create or update www subdomain record (e.g., www.fleenking.pro)
+        $wwwDomain = 'www.' . $domain->domain;
+        $existingWww = $this->cf->findDnsRecord($zoneId, $wwwDomain);
+
+        $wwwRecord = $existingWww
+            ? $this->cf->updateDnsRecord($zoneId, $existingWww->id, $targetIp, $proxied)
+            : $this->cf->createDnsRecord($zoneId, $wwwDomain, $targetIp, $proxied);
 
         $updates = [
             'cloudflare_dns_id' => $record->id,
@@ -206,12 +220,14 @@ class DomainOrchestrator
         $this->logger->success($domain, DomainStatus::STORMWALL_DOMAIN->value . '|' . DomainStatus::CLOUDFLARE_ZONE->value, [
             'zone_id'    => $zoneId,
             'name'       => $domain->domain,
+            'name_www'   => $wwwDomain,
             'target_ip'  => $targetIp,
             'proxied'    => $proxied,
         ], [
-            'cloudflare_dns_id' => $record->id,
-            'content'           => $record->content,
-            'proxied'           => $record->proxied,
+            'cloudflare_dns_id'     => $record->id,
+            'cloudflare_dns_www_id' => $wwwRecord->id,
+            'content'               => $record->content,
+            'proxied'               => $record->proxied,
         ]);
 
         $this->dispatchNextStep($domain);
